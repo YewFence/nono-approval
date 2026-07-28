@@ -1,0 +1,165 @@
+[settings]
+lockfile = true
+env_shell_expand = true
+minimum_release_age = "3d"
+
+[tools]
+rust = { version = "1.97.1", profile = "minimal", components = ["clippy", "rustfmt"] }
+# https://nodejs.org/
+node = "26"
+# https://github.com/jdx/aube
+aube = "1"
+# https://github.com/jdx/hk
+hk = "1"
+# https://github.com/suzuki-shunsuke/nllint
+"github:suzuki-shunsuke/nllint" = "1"
+# https://github.com/suzuki-shunsuke/pinact
+pinact = "4"
+# https://github.com/crate-ci/typos
+typos = "1.48.0"
+betterleaks = "1"
+actionlint = "1"
+
+[vars]
+nllint_excludes = ""
+rust_binary_name = "rust-template"
+# example: exclude file
+# nllint_excludes = "':(top,exclude)file'"
+
+[env]
+# the minimum release age of github actions in days
+PINACT_MIN_AGE = "3"
+PINACT_GITHUB_TOKEN = { value = "${MISE_GITHUB_TOKEN:-}", redact = true }
+
+[tasks."deps:check"]
+description = "Check Cargo dependency metadata and the lockfile"
+run = "cargo metadata --locked --format-version 1 >/dev/null"
+
+[tasks."deps:fix"]
+description = "Regenerate the Cargo lockfile"
+run = "cargo generate-lockfile"
+
+[tasks."deps:update"]
+description = "Update Cargo dependencies"
+run = "cargo update"
+
+[tasks.test]
+description = "Run Rust tests"
+run = "cargo test --workspace --all-targets --all-features --locked"
+
+[tasks."fmt:check"]
+description = "Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks."fmt:fix"]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Run Clippy with warnings denied"
+run = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+
+[tasks.build]
+description = "Build an optimized Rust binary"
+run = "cargo build --workspace --all-features --release --locked"
+
+[tasks."build:check"]
+description = "Check all Rust targets and features"
+run = "cargo check --workspace --all-targets --all-features --locked"
+
+[tasks."leaks:check"]
+description = "Run betterleaks checks"
+run = "betterleaks git --redact --no-banner"
+
+[tasks."typos:check"]
+description = "Run Typos Lint"
+run = "typos"
+
+[tasks."typos:fix"]
+description = "Fix Typos Lint"
+run = "typos --write-changes"
+
+[tasks."newline:check"]
+description = "Check final newlines and surrounding whitespace in tracked text files"
+run = "git grep -Ilz '' -- . {{ vars.nllint_excludes }} | xargs -0 nllint --trim-space"
+
+[tasks."newline:fix"]
+description = "Fix final newlines and surrounding whitespace in tracked text files"
+run = "git grep -Ilz '' -- . {{ vars.nllint_excludes }} | xargs -0 nllint --fix --trim-space"
+
+[tasks.check]
+description = "Run read-only project and repository checks"
+run = [
+  { task = "repo:check" },
+  { task = "rust:check" },
+  { task = "test" }
+]
+alias = "c"
+
+[tasks."repo:check"]
+description = "Run language-neutral repository checks"
+run = [
+  { task = "deps:check" },
+  { task = "newline:check" },
+  { task = "typos:check" },
+  { task = "leaks:check" },
+  { task = "actions:check" }
+]
+
+[tasks."rust:check"]
+description = "Run Rust formatting, compilation, and lint checks"
+run = [
+  { task = "fmt:check" },
+  { task = "build:check" },
+  { task = "lint" }
+]
+
+[tasks.fix]
+description = "Fix project and repository formatting"
+run = [
+  { task = "deps:fix" },
+  { task = "newline:fix" },
+  { task = "typos:fix" },
+  { task = "fmt:fix" }
+]
+alias = "f"
+
+[tasks.'hooks:install']
+description = "Install Git hooks managed by hk"
+run = "hk install"
+
+[tasks."actions:check"]
+description = "Run actionlint"
+depends = ["actions:pin-offline:check"]
+run = "actionlint"
+
+[tasks.'actions:update']
+description = "Update GitHub Action versions and pin to commit hashes"
+run = "pinact run --update"
+
+[tasks.'actions:pin-offline:check']
+description = "Check GitHub Action versions and pin to commit hashes"
+run = "unset PINACT_MIN_AGE && pinact run --fix=false --no-api"
+
+[tasks.'docs:install']
+description = "Install documentation site dependencies"
+dir = "docs"
+run = "aube install --frozen-lockfile"
+
+[tasks.'docs:dev']
+description = "Start the VitePress documentation site"
+depends = ["docs:install"]
+dir = "docs"
+run = "aube run dev"
+
+[tasks.'docs:build']
+description = "Build the VitePress documentation site"
+depends = ["docs:install"]
+dir = "docs"
+run = "aube run build"
+
+[tasks.'docs:preview']
+description = "Preview the VitePress documentation site"
+depends = ["docs:install"]
+dir = "docs"
+run = "aube run preview"

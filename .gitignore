@@ -1,0 +1,14 @@
+/docs/node_modules/
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
+/target/
+/dist/
+/coverage/
+
+.codex
+.claude
+
+.env
+.env.local
+
+mise.local.toml
