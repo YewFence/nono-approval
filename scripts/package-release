@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${RELEASE_TARGET:?RELEASE_TARGET is required}"
+: "${RELEASE_PLATFORM:?RELEASE_PLATFORM is required}"
+: "${RELEASE_TAG:?RELEASE_TAG is required}"
+
+binary_name="${RELEASE_BINARY:-rust-template}"
+output_dir="${RELEASE_OUTPUT_DIR:-dist}"
+binary_suffix=""
+
+case "${RELEASE_TARGET}" in
+  *-windows-*) binary_suffix=".exe" ;;
+esac
+
+rustup target add "${RELEASE_TARGET}"
+cargo build --release --locked --target "${RELEASE_TARGET}"
+
+source_binary="target/${RELEASE_TARGET}/release/${binary_name}${binary_suffix}"
+archive_stem="${binary_name}_${RELEASE_TAG}_${RELEASE_PLATFORM}"
+staging_dir="${output_dir}/${archive_stem}"
+
+mkdir -p "${staging_dir}"
+cp "${source_binary}" "${staging_dir}/${binary_name}${binary_suffix}"
+cp README.md LICENSE "${staging_dir}/"
+tar -C "${output_dir}" -czf "${output_dir}/${archive_stem}.tar.gz" "${archive_stem}"
+rm "${staging_dir}/${binary_name}${binary_suffix}"
+rm "${staging_dir}/README.md" "${staging_dir}/LICENSE"
+rmdir "${staging_dir}"
+
+printf '%s\n' "${output_dir}/${archive_stem}.tar.gz"

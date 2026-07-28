@@ -1,0 +1,4 @@
+interface:
+  display_name: "编写精简的 CI 工作流"
+  short_description: "在 mise.ci.toml 与工作流内联逻辑之间划清边界"
+  default_prompt: "Use $keep-ci-workflows-thin to place each CI behavior in mise.ci.toml or the workflow without duplication."

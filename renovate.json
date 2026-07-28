@@ -1,0 +1,68 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "timezone": "Asia/Shanghai",
+  "dependencyDashboard": true,
+  "minimumReleaseAge": "3 days",
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "enabledManagers": [
+    "cargo",
+    "github-actions",
+    "npm",
+    "mise"
+  ],
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions",
+      "semanticCommitType": "ci",
+      "commitMessageTopic": "GitHub Actions"
+    },
+    {
+      "description": "Keep documentation dependency ranges and compatible lockfiles current.",
+      "matchManagers": [
+        "npm"
+      ],
+      "groupName": "npm dependencies",
+      "rangeStrategy": "bump",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "npm-deps"
+    },
+    {
+      "description": "Group mise tool updates.",
+      "matchManagers": [
+        "mise"
+      ],
+      "groupName": "mise tools",
+      "rangeStrategy": "update-lockfile",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "mise-deps"
+    },
+    {
+      "description": "Gate major updates through the dependency dashboard.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Group Cargo dependency updates.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "Cargo dependencies",
+      "rangeStrategy": "bump",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "cargo-deps"
+    }
+  ]
+}

@@ -170,13 +170,22 @@ impl Broker {
 
 - `tokio`：runtime、socket、signal、timeout、oneshot；
 - `hyper`、`hyper-util`、`http-body-util`：webhook 与 control HTTP；
-- `clap`：CLI；
-- `ratatui`、`crossterm`：全屏 TUI；
+- `clap`、`clap_complete`：CLI 与 shell completion；
+- `ratatui`、`crossterm`：全屏 TUI 与终端事件；
 - `directories`：Linux/macOS 平台原生 config、state/cache 与 runtime 基础目录；
 - `serde`、`serde_json`：wire/control DTO；
-- `tracing`：结构化运行日志；
+- `toml`：严格解析并生成 `config.toml`；
+- `tracing`、`tracing-subscriber`：结构化事件以及 text/JSON 运行日志；
+- `thiserror`：library 的领域与 adapter 错误类型；
+- `getrandom`：从 OS 随机源生成 approval ID 与进程期 keyed-hash key；
+- `jiff`：wall-clock timestamp、RFC 3339 与本地时间展示；Approval Lease 仍只使用 `tokio::time::Instant`；
+- `humantime`、`bytesize`：CLI/TOML 中的 duration 与 byte-size 值；
+- `vte`：识别并移除不可信文本中的终端控制序列；
+- `shlex`：Linux/macOS 命令参数的确定性展示 quoting；
+- `unicode-width`、`textwrap`：终端列宽计算与完整详情换行；
+- `blake3`：Tombstone 中原始标识符的进程期 keyed hash；
+- `tempfile`：在目标配置目录内创建 owner-only 临时文件并原子持久化；
 - `nix`：安全封装 Linux `SO_PEERCRED`、macOS `LOCAL_PEERPID` 与 `getpeereid`；生产 crate 不直接依赖或调用 `libc`；
-- OS 随机源：approval ID。
 
 生产依赖不包含 nono crate。
 
