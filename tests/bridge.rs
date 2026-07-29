@@ -9,7 +9,7 @@ use hyper::header::CONTENT_TYPE;
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use nono_approval::broker::{Broker, BrokerConfig, ShowApproval, TerminalState};
-use nono_approval::control::{ControlClient, ControlContext, DebugCaptureStatus, DecisionRequest};
+use nono_approval::control::{ControlClient, ControlContext, DecisionRequest};
 use nono_approval::display::MAX_DETAIL_BYTES;
 use nono_approval::protocol::{DEFAULT_MAX_BODY_BYTES, WebhookDecision};
 use nono_approval::webhook::{WEBHOOK_PATH, WebhookContext};
@@ -26,7 +26,8 @@ async fn bridges_webhook_to_exact_control_decision() {
     let broker = Broker::new(BrokerConfig {
         request_timeout: Duration::from_secs(2),
         ..BrokerConfig::default()
-    });
+    })
+    .unwrap();
 
     let webhook_task = tokio::spawn(nono_approval::webhook::serve(
         tcp_listener,
@@ -44,7 +45,7 @@ async fn bridges_webhook_to_exact_control_decision() {
             webhook_listen: address.to_string(),
             max_pending: 64,
             max_per_session: 8,
-            debug_capture: DebugCaptureStatus::Disabled,
+            debug_capture: None,
         },
     ));
 

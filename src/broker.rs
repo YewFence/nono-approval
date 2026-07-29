@@ -11,6 +11,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::Instant;
 
+use crate::debug_capture::DebugCapture;
 use crate::display::{ApprovalDetailContent, sanitize};
 use crate::protocol::{IncomingApproval, WIRE_ADAPTER_VERSION, WebhookDecision};
 
@@ -185,7 +186,7 @@ struct Tombstone {
     received_at: SystemTime,
     completed_at: SystemTime,
     wait_duration: Duration,
-    replay_key: (String, String),
+    identity_hash: blake3::Hash,
     wire_adapter_version: u32,
 }
 
@@ -200,6 +201,8 @@ struct BrokerState {
 pub struct Broker {
     config: BrokerConfig,
     state: Arc<Mutex<BrokerState>>,
+    debug_capture: Option<DebugCapture>,
+    hash_key: [u8; 32],
 }
 
 pub struct Submission {
@@ -249,12 +252,39 @@ impl Drop for Submission {
 }
 
 impl Broker {
-    #[must_use]
-    pub fn new(config: BrokerConfig) -> Self {
-        Self {
+    /// Creates an in-memory broker with a fresh process-lifetime hash key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operating-system random source is unavailable.
+    pub fn new(config: BrokerConfig) -> Result<Self, BrokerError> {
+        let mut hash_key = [0_u8; 32];
+        fill(&mut hash_key).map_err(|error| BrokerError::Random(error.to_string()))?;
+        Ok(Self {
             config,
             state: Arc::new(Mutex::new(BrokerState::default())),
-        }
+            debug_capture: None,
+            hash_key,
+        })
+    }
+
+    /// Creates a broker that writes explicit managed debug-capture events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operating-system random source is unavailable.
+    pub fn with_debug_capture(
+        config: BrokerConfig,
+        debug_capture: DebugCapture,
+    ) -> Result<Self, BrokerError> {
+        let mut hash_key = [0_u8; 32];
+        fill(&mut hash_key).map_err(|error| BrokerError::Random(error.to_string()))?;
+        Ok(Self {
+            config,
+            state: Arc::new(Mutex::new(BrokerState::default())),
+            debug_capture: Some(debug_capture),
+            hash_key,
+        })
     }
 
     /// Registers a validated incoming approval request.
@@ -302,6 +332,9 @@ impl Broker {
         let received_at = SystemTime::now();
         let deadline_wall = received_at + self.config.request_timeout;
         let deadline = Instant::now() + self.config.request_timeout;
+        if let Some(debug_capture) = &self.debug_capture {
+            debug_capture.record_received(&approval_id, &incoming, &timestamp(deadline_wall));
+        }
         let (decision_tx, receiver) = oneshot::channel();
         state.pending.insert(
             approval_id.clone(),
@@ -411,7 +444,7 @@ impl Broker {
                 BrokerError::NotFound
             }
         })?;
-        self.complete(&mut broker_state, pending, state, Some(decision));
+        self.complete(&mut broker_state, pending, state, Some(decision), "control");
         Ok(state)
     }
 
@@ -426,7 +459,13 @@ impl Broker {
             .pending
             .remove(approval_id)
             .ok_or(BrokerError::NotFound)?;
-        self.complete(&mut state, pending, TerminalState::Cancelled, None);
+        self.complete(
+            &mut state,
+            pending,
+            TerminalState::Cancelled,
+            None,
+            "disconnect",
+        );
         Ok(())
     }
 
@@ -445,6 +484,7 @@ impl Broker {
                 Some(WebhookDecision::Denied {
                     reason: "approval daemon is shutting down".to_owned(),
                 }),
+                "shutdown",
             );
         }
     }
@@ -464,6 +504,7 @@ impl Broker {
             pending,
             TerminalState::Expired,
             Some(decision.clone()),
+            "lease_expired",
         );
         Some(decision)
     }
@@ -484,6 +525,7 @@ impl Broker {
                     Some(WebhookDecision::Denied {
                         reason: "approval request expired".to_owned(),
                     }),
+                    "lease_expired",
                 );
             }
         }
@@ -495,9 +537,39 @@ impl Broker {
         mut pending: PendingApproval,
         terminal_state: TerminalState,
         decision: Option<WebhookDecision>,
+        source: &str,
     ) {
         let completed_at = SystemTime::now();
+        let wait_duration = completed_at
+            .duration_since(pending.received_at)
+            .unwrap_or_default();
+        let reason = match &decision {
+            Some(WebhookDecision::Denied { reason }) => Some(reason.as_str()),
+            Some(WebhookDecision::Granted) | None => None,
+        };
+        if let Some(debug_capture) = &self.debug_capture {
+            debug_capture.record_completed(
+                &pending.approval_id,
+                terminal_state,
+                source,
+                reason,
+                wait_duration,
+            );
+        }
+        tracing::info!(
+            approval_id = %pending.approval_id,
+            capability_type = %pending.capability_type,
+            state = ?terminal_state,
+            wait_ms = wait_duration.as_millis(),
+            "approval completed"
+        );
         let replay_key = (pending.session_id.clone(), pending.request_id.clone());
+        let mut hasher = blake3::Hasher::new_keyed(&self.hash_key);
+        for value in [pending.session_id.as_bytes(), pending.request_id.as_bytes()] {
+            hasher.update(&(value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        }
+        let identity_hash = hasher.finalize();
         state.replay.insert(
             replay_key.clone(),
             Instant::now() + self.config.tombstone_ttl,
@@ -511,10 +583,8 @@ impl Broker {
             state: terminal_state,
             received_at: pending.received_at,
             completed_at,
-            wait_duration: completed_at
-                .duration_since(pending.received_at)
-                .unwrap_or_default(),
-            replay_key,
+            wait_duration,
+            identity_hash,
             wire_adapter_version: WIRE_ADAPTER_VERSION,
         });
         self.prune(state);
@@ -540,7 +610,7 @@ impl Broker {
             !tombstone.capability_type.is_empty()
                 && tombstone.received_at <= tombstone.completed_at
                 && tombstone.wait_duration <= self.config.tombstone_ttl + DEFAULT_REQUEST_TIMEOUT
-                && !tombstone.replay_key.0.is_empty()
+                && tombstone.identity_hash != blake3::Hash::from_bytes([0; 32])
                 && tombstone.wire_adapter_version == WIRE_ADAPTER_VERSION
         }));
     }
@@ -582,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn grants_once_and_destroys_detail() {
-        let broker = Broker::new(BrokerConfig::default());
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
         let submission = broker.submit(incoming("r1", "s1")).await.unwrap();
         let id = submission.approval_id.clone();
         assert!(matches!(
@@ -609,7 +679,8 @@ mod tests {
         let broker = Broker::new(BrokerConfig {
             request_timeout: Duration::from_millis(10),
             ..BrokerConfig::default()
-        });
+        })
+        .unwrap();
         let submission = broker.submit(incoming("r1", "s1")).await.unwrap();
         assert_eq!(
             submission.wait().await,
@@ -625,7 +696,8 @@ mod tests {
             max_pending: 2,
             max_per_session: 1,
             ..BrokerConfig::default()
-        });
+        })
+        .unwrap();
         broker.submit(incoming("r1", "s1")).await.unwrap();
         assert!(matches!(
             broker.submit(incoming("r1", "s1")).await,

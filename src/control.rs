@@ -21,6 +21,8 @@ use crate::broker::{
     ApprovalDetail, ApprovalId, ApprovalSummary, Broker, BrokerError, CompletedApproval,
     ShowApproval, TerminalState,
 };
+use crate::debug_capture::DebugCapture;
+pub use crate::debug_capture::DebugCaptureStatus;
 use crate::peer_identity::verify_owner;
 use crate::protocol::WebhookDecision;
 
@@ -33,15 +35,7 @@ pub struct ControlContext {
     pub webhook_listen: String,
     pub max_pending: usize,
     pub max_per_session: usize,
-    pub debug_capture: DebugCaptureStatus,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum DebugCaptureStatus {
-    Disabled,
-    Enabled { path: PathBuf },
-    Failed { error_category: String },
+    pub debug_capture: Option<DebugCapture>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -245,7 +239,10 @@ async fn handle(
             max_pending: context.max_pending,
             max_per_session: context.max_per_session,
             webhook_listen: context.webhook_listen.clone(),
-            debug_capture: context.debug_capture.clone(),
+            debug_capture: context
+                .debug_capture
+                .as_ref()
+                .map_or(DebugCaptureStatus::Disabled, DebugCapture::status),
         };
         return Ok(json_response(StatusCode::OK, &status));
     }

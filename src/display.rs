@@ -184,6 +184,10 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
         field("Request ID", request.request_id()),
         field("Session ID", request.session_id()),
         field("Child PID", request.child_pid().to_string()),
+        field(
+            "Wire DTO",
+            serde_json::to_string(request).unwrap_or_else(|_| "unavailable".to_owned()),
+        ),
     ];
 
     ApprovalDetailContent {

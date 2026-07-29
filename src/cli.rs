@@ -5,13 +5,17 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use bytesize::ByteSize;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 
 use crate::broker::{ApprovalId, BrokerConfig, DEFAULT_DENIAL_REASON, validate_denial_reason};
+use crate::config::{ResolvedConfig, load, setup};
 use crate::control::{ApprovalView, ControlClient, DebugCaptureStatus, DecisionRequest};
 use crate::daemon::{DaemonConfig, run};
+use crate::debug_capture::{DebugCapture, clean_captures, list_captures};
 use crate::display::truncate_summary;
 use crate::runtime_path::ProjectPaths;
+use crate::webhook::WEBHOOK_PATH;
 
 #[derive(Debug, Parser)]
 #[command(name = "nono-approval", version, about)]
@@ -22,12 +26,42 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Setup,
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     Serve(ServeArgs),
     Status(ClientArgs),
     List(ListArgs),
     Show(ShowArgs),
     Approve(DecisionArgs),
     Deny(DenyArgs),
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+    Completions {
+        shell: Shell,
+    },
+    #[command(name = "__probe-control-socket", hide = true)]
+    ProbeControlSocket(ClientArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    Validate {
+        #[arg(long)]
+        profile: String,
+        #[command(flatten)]
+        client: ClientArgs,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Subcommand)]
+enum DebugCommand {
+    Captures,
+    Clean,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -77,18 +111,18 @@ enum LogFormat {
 
 #[derive(Debug, Args)]
 struct ServeArgs {
-    #[arg(long, default_value = "127.0.0.1:17443")]
-    webhook_listen: SocketAddr,
+    #[arg(long)]
+    webhook_listen: Option<SocketAddr>,
     #[arg(long)]
     control_socket: Option<PathBuf>,
-    #[arg(long, default_value = "270s", value_parser = parse_duration)]
-    request_timeout: Duration,
-    #[arg(long, default_value_t = 64)]
-    max_pending: usize,
-    #[arg(long, default_value_t = 8)]
-    max_per_session: usize,
-    #[arg(long, default_value = "256KiB", value_parser = parse_byte_size)]
-    max_body: usize,
+    #[arg(long, value_parser = parse_duration)]
+    request_timeout: Option<Duration>,
+    #[arg(long)]
+    max_pending: Option<usize>,
+    #[arg(long)]
+    max_per_session: Option<usize>,
+    #[arg(long, value_parser = parse_byte_size)]
+    max_body: Option<usize>,
     #[arg(long)]
     debug_capture: bool,
     #[arg(long, value_enum, default_value_t = LogFormat::Text)]
@@ -116,6 +150,10 @@ pub async fn run_cli() -> Result<(), Box<dyn Error>> {
 
 async fn execute(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
+        Some(Command::Setup) => setup_command()?,
+        Some(Command::Config {
+            command: ConfigCommand::Validate { profile, client },
+        }) => validate_config(&profile, client).await?,
         Some(Command::Serve(args)) => serve(args).await?,
         Some(Command::Status(args)) => status(args).await?,
         Some(Command::List(args)) => list(args).await?,
@@ -135,42 +173,45 @@ async fn execute(cli: Cli) -> Result<(), Box<dyn Error>> {
             )
             .await?;
         }
+        Some(Command::Debug { command }) => debug_command(command)?,
+        Some(Command::Completions { shell }) => {
+            generate(
+                shell,
+                &mut Cli::command(),
+                "nono-approval",
+                &mut std::io::stdout(),
+            );
+        }
+        Some(Command::ProbeControlSocket(args)) => {
+            let path = client_path(args)?;
+            crate::profile_validation::run_probe(&path).await?;
+        }
         None => {
-            list(ListArgs {
-                client: ClientArgs {
-                    control_socket: None,
-                },
-                json: false,
-            })
-            .await?;
+            let paths = ProjectPaths::resolve()?;
+            crate::interactive::run(&paths.control_socket).await?;
         }
     }
     Ok(())
 }
 
 async fn serve(args: ServeArgs) -> Result<(), Box<dyn Error>> {
-    if args.max_pending == 0 || args.max_per_session == 0 {
-        return Err("pending limits must be greater than zero".into());
-    }
-    if args.max_per_session > args.max_pending {
-        return Err("max-per-session must not exceed max-pending".into());
-    }
     let paths = ProjectPaths::resolve()?;
+    let file = load(&paths.config_file)?;
+    let resolved = merge_config(file.resolve()?, &args);
+    validate_resolved(&resolved)?;
     let control_socket = args.control_socket.unwrap_or(paths.control_socket);
-    let mut config = DaemonConfig::new(args.webhook_listen, control_socket);
+    let mut config = DaemonConfig::new(resolved.webhook_listen, control_socket);
     config.broker = BrokerConfig {
-        request_timeout: args.request_timeout,
-        max_pending: args.max_pending,
-        max_per_session: args.max_per_session,
+        request_timeout: resolved.request_timeout,
+        max_pending: resolved.max_pending,
+        max_per_session: resolved.max_per_session,
         ..BrokerConfig::default()
     };
-    config.max_body_bytes = args.max_body;
+    config.max_body_bytes = resolved.max_body_bytes;
     if args.debug_capture {
-        return Err(
-            "debug capture is not available until its managed state file is initialized".into(),
-        );
+        config.debug_capture = Some(DebugCapture::create(&paths.state_dir)?);
     }
-    let _ = args.log_format;
+    init_logging(args.log_format)?;
     run(config).await?;
     Ok(())
 }
@@ -250,11 +291,109 @@ async fn decide(args: DecisionArgs, decision: DecisionRequest) -> Result<(), Box
 }
 
 fn client(args: ClientArgs) -> Result<ControlClient, Box<dyn Error>> {
-    let path = match args.control_socket {
+    Ok(ControlClient::new(client_path(args)?))
+}
+
+fn client_path(args: ClientArgs) -> Result<PathBuf, Box<dyn Error>> {
+    Ok(match args.control_socket {
         Some(path) => path,
         None => ProjectPaths::resolve()?.control_socket,
-    };
-    Ok(ControlClient::new(path))
+    })
+}
+
+fn setup_command() -> Result<(), Box<dyn Error>> {
+    let paths = ProjectPaths::resolve()?;
+    let config = setup(&paths.config_file)?;
+    let resolved = config.resolve()?;
+    let endpoint = format!("http://{}{}", resolved.webhook_listen, WEBHOOK_PATH);
+    println!("Configuration: {}", paths.config_file.display());
+    println!("Webhook endpoint: {endpoint}");
+    println!();
+    println!("nono profile fragment:");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "command_policies": {
+                "approval_backends": {
+                    "local-broker": {
+                        "type": "webhook",
+                        "url": endpoint,
+                        "timeout_secs": 300
+                    }
+                },
+                "approval_defaults": {
+                    "backend": "local-broker",
+                    "timeout_secs": 300
+                }
+            }
+        }))?
+    );
+    println!();
+    println!("Validate isolation with: nono-approval config validate --profile <name-or-path>");
+    Ok(())
+}
+
+async fn validate_config(profile: &str, args: ClientArgs) -> Result<(), Box<dyn Error>> {
+    eprintln!("warning: nono may run this profile's host-side session hooks during validation");
+    crate::profile_validation::validate_profile(profile, &client_path(args)?).await?;
+    println!("Control socket access was denied by the sandbox (EACCES/EPERM).");
+    Ok(())
+}
+
+fn merge_config(mut config: ResolvedConfig, args: &ServeArgs) -> ResolvedConfig {
+    config.webhook_listen = args.webhook_listen.unwrap_or(config.webhook_listen);
+    config.request_timeout = args.request_timeout.unwrap_or(config.request_timeout);
+    config.max_pending = args.max_pending.unwrap_or(config.max_pending);
+    config.max_per_session = args.max_per_session.unwrap_or(config.max_per_session);
+    config.max_body_bytes = args.max_body.unwrap_or(config.max_body_bytes);
+    config
+}
+
+fn validate_resolved(config: &ResolvedConfig) -> Result<(), Box<dyn Error>> {
+    if !config.webhook_listen.ip().is_loopback() {
+        return Err("webhook listener must use a loopback IP address".into());
+    }
+    if config.max_pending == 0 || config.max_per_session == 0 || config.max_body_bytes == 0 {
+        return Err("configured limits must be greater than zero".into());
+    }
+    if config.max_per_session > config.max_pending {
+        return Err("max-per-session must not exceed max-pending".into());
+    }
+    Ok(())
+}
+
+fn debug_command(command: DebugCommand) -> Result<(), Box<dyn Error>> {
+    let paths = ProjectPaths::resolve()?;
+    match command {
+        DebugCommand::Captures => {
+            for capture in list_captures(&paths.state_dir)? {
+                println!(
+                    "{}\t{}\t{} bytes",
+                    capture.name, capture.created_at, capture.size_bytes
+                );
+            }
+        }
+        DebugCommand::Clean => {
+            let count = clean_captures(&paths.state_dir)?;
+            println!("Deleted {count} debug capture file(s).");
+        }
+    }
+    Ok(())
+}
+
+fn init_logging(format: LogFormat) -> Result<(), Box<dyn Error>> {
+    match format {
+        LogFormat::Text => tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init()
+            .map_err(|error| format!("failed to initialize logging: {error}"))?,
+        LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_writer(std::io::stderr)
+            .try_init()
+            .map_err(|error| format!("failed to initialize logging: {error}"))?,
+    }
+    Ok(())
 }
 
 #[cfg(test)]

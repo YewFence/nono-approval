@@ -9,7 +9,8 @@ use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener};
 
 use crate::broker::{Broker, BrokerConfig};
-use crate::control::{ControlContext, DebugCaptureStatus};
+use crate::control::ControlContext;
+use crate::debug_capture::DebugCapture;
 use crate::display::MAX_DETAIL_BYTES;
 use crate::protocol::DEFAULT_MAX_BODY_BYTES;
 use crate::runtime_path::{
@@ -24,7 +25,7 @@ pub struct DaemonConfig {
     pub broker: BrokerConfig,
     pub max_body_bytes: usize,
     pub max_detail_bytes: usize,
-    pub debug_capture: DebugCaptureStatus,
+    pub debug_capture: Option<DebugCapture>,
 }
 
 impl DaemonConfig {
@@ -36,7 +37,7 @@ impl DaemonConfig {
             broker: BrokerConfig::default(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_detail_bytes: MAX_DETAIL_BYTES,
-            debug_capture: DebugCaptureStatus::Disabled,
+            debug_capture: None,
         }
     }
 }
@@ -53,6 +54,8 @@ pub enum DaemonError {
     WebhookTask(String),
     #[error("control server stopped unexpectedly: {0}")]
     ControlTask(String),
+    #[error(transparent)]
+    Broker(#[from] crate::broker::BrokerError),
 }
 
 /// Runs the daemon until SIGINT, SIGTERM, or a server failure.
@@ -75,7 +78,11 @@ pub async fn run(config: DaemonConfig) -> Result<(), DaemonError> {
     let unix_listener = UnixListener::bind(&config.control_socket)?;
     fs::set_permissions(&config.control_socket, fs::Permissions::from_mode(0o600))?;
     let socket_guard = SocketGuard(config.control_socket.clone());
-    let broker = Broker::new(config.broker.clone());
+    let broker = if let Some(capture) = &config.debug_capture {
+        Broker::with_debug_capture(config.broker.clone(), capture.clone())?
+    } else {
+        Broker::new(config.broker.clone())?
+    };
     let started_at = std::time::Instant::now();
 
     println!("nono-approval is ready");
@@ -84,6 +91,11 @@ pub async fn run(config: DaemonConfig) -> Result<(), DaemonError> {
         config.webhook_listen, WEBHOOK_PATH
     );
     println!("  control: {}", config.control_socket.display());
+    if let Some(capture) = &config.debug_capture
+        && let crate::debug_capture::DebugCaptureStatus::Enabled { path } = capture.status()
+    {
+        println!("  debug capture: {}", path.display());
+    }
 
     let mut webhook_task = tokio::spawn(crate::webhook::serve(
         tcp_listener,
