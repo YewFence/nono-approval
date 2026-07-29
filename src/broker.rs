@@ -205,14 +205,21 @@ pub struct Broker {
 pub struct Submission {
     pub approval_id: ApprovalId,
     deadline: Instant,
-    receiver: oneshot::Receiver<WebhookDecision>,
+    receiver: Option<oneshot::Receiver<WebhookDecision>>,
     broker: Broker,
+    active: bool,
 }
 
 impl Submission {
-    pub async fn wait(self) -> WebhookDecision {
-        tokio::select! {
-            decision = self.receiver => decision.unwrap_or_else(|_| WebhookDecision::Denied {
+    pub async fn wait(mut self) -> WebhookDecision {
+        let Some(receiver) = self.receiver.take() else {
+            self.active = false;
+            return WebhookDecision::Denied {
+                reason: "approval submission is unavailable".to_owned(),
+            };
+        };
+        let decision = tokio::select! {
+            decision = receiver => decision.unwrap_or_else(|_| WebhookDecision::Denied {
                 reason: "approval daemon stopped".to_owned(),
             }),
             () = tokio::time::sleep_until(self.deadline) => {
@@ -220,6 +227,23 @@ impl Submission {
                     reason: "approval request expired".to_owned(),
                 })
             }
+        };
+        self.active = false;
+        decision
+    }
+}
+
+impl Drop for Submission {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let approval_id = self.approval_id.clone();
+        let broker = self.broker.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = broker.cancel(&approval_id).await;
+            });
         }
     }
 }
@@ -296,8 +320,9 @@ impl Broker {
         Ok(Submission {
             approval_id,
             deadline,
-            receiver,
+            receiver: Some(receiver),
             broker: self.clone(),
+            active: true,
         })
     }
 
