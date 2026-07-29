@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
 
 fn main() {
-    println!("{}", rust_template::greeting("rust-template"));
+    println!("nono-approval {}", nono_approval::VERSION);
 }
