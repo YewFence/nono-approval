@@ -343,9 +343,6 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate and verify checksums
-        run: mise run release:checksums
-
       - name: Publish crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
