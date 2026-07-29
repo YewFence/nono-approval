@@ -267,9 +267,13 @@ async fn show(args: ShowArgs) -> Result<(), Box<dyn Error>> {
             if args.debug {
                 println!();
                 println!("Debug:");
-                println!("Source: {:?}", detail.content.source_kind);
-                for field in detail.content.debug_fields {
-                    println!("{}: {}", field.label, field.value);
+                if let Some(debug) = detail.debug {
+                    println!(
+                        "Claimed backend: {}",
+                        crate::display::sanitize(&debug.claimed_backend)
+                    );
+                    println!("Source: {:?}", debug.source_kind);
+                    println!("Wire DTO: {}", serde_json::to_string(&debug.wire_request)?);
                 }
             }
         }

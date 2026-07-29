@@ -113,7 +113,7 @@ impl App {
             return;
         };
         self.detail = match self.client.show(&approval_id, false).await {
-            Ok(ApprovalView::Pending(detail)) => Some(detail),
+            Ok(ApprovalView::Pending(detail)) => Some(*detail),
             Ok(ApprovalView::Completed(_)) | Err(_) => None,
         };
     }

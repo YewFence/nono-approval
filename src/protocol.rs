@@ -16,6 +16,39 @@ pub enum SourceKind {
     Network,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AccessMode {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl std::fmt::Display for AccessMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read => formatter.write_str("read"),
+            Self::Write => formatter.write_str("write"),
+            Self::ReadWrite => formatter.write_str("read+write"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkProtocol {
+    Tcp,
+    Udp,
+}
+
+impl std::fmt::Display for NetworkProtocol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp => formatter.write_str("tcp"),
+            Self::Udp => formatter.write_str("udp"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "capability_type", rename_all = "snake_case")]
 pub enum KnownApprovalRequest {
@@ -43,7 +76,7 @@ pub enum KnownApprovalRequest {
     Capability {
         request_id: String,
         path: String,
-        access: String,
+        access: AccessMode,
         reason: Option<String>,
         child_pid: u32,
         session_id: String,
@@ -52,7 +85,7 @@ pub enum KnownApprovalRequest {
         request_id: String,
         host: String,
         port: u16,
-        protocol: String,
+        protocol: NetworkProtocol,
         resolved_ips: Vec<String>,
         reason: Option<String>,
         child_pid: u32,
@@ -138,6 +171,8 @@ pub enum ProtocolError {
     EmptyRequestId,
     #[error("session_id must not be empty")]
     EmptySessionId,
+    #[error("required request field must not be empty: {0}")]
+    EmptyField(&'static str),
     #[error("approval detail exceeds {limit} bytes")]
     DetailTooLarge { limit: usize },
 }
@@ -170,6 +205,7 @@ pub fn parse_webhook_body(
     if request.session_id().is_empty() {
         return Err(ProtocolError::EmptySessionId);
     }
+    validate_required_fields(&request)?;
     let detail = build_detail(&request);
     if detail.serialized_len() > max_detail_bytes {
         return Err(ProtocolError::DetailTooLarge {
@@ -182,6 +218,41 @@ pub fn parse_webhook_body(
         request,
         detail,
     })
+}
+
+fn validate_required_fields(request: &KnownApprovalRequest) -> Result<(), ProtocolError> {
+    let fields: &[(&str, &'static str)] = match request {
+        KnownApprovalRequest::Command {
+            command,
+            caller,
+            intercept_rule,
+            ..
+        } => &[
+            (command, "command"),
+            (caller, "caller"),
+            (intercept_rule, "intercept_rule"),
+        ],
+        KnownApprovalRequest::Endpoint {
+            route_id,
+            upstream,
+            method,
+            path,
+            rule_label,
+            ..
+        } => &[
+            (route_id, "route_id"),
+            (upstream, "upstream"),
+            (method, "method"),
+            (path, "path"),
+            (rule_label, "rule_label"),
+        ],
+        KnownApprovalRequest::Capability { path, .. } => &[(path, "path")],
+        KnownApprovalRequest::Network { host, .. } => &[(host, "host")],
+    };
+    fields
+        .iter()
+        .find(|(value, _)| value.is_empty())
+        .map_or(Ok(()), |(_, name)| Err(ProtocolError::EmptyField(name)))
 }
 
 /// Parses a webhook request using the built-in body and detail limits.
@@ -261,5 +332,24 @@ mod tests {
         for fixture in fixtures {
             parse_default_webhook_body(fixture.as_bytes()).unwrap();
         }
+    }
+
+    #[test]
+    fn rejects_unknown_access_mode_protocol_and_empty_operation_fields() {
+        let invalid_access = r#"{"backend":"x","request":{"capability_type":"capability","request_id":"r","path":"/tmp/demo","access":"Execute","reason":null,"child_pid":1,"session_id":"s"}}"#;
+        let invalid_protocol = r#"{"backend":"x","request":{"capability_type":"network","request_id":"r","host":"example.com","port":53,"protocol":"sctp","resolved_ips":[],"reason":null,"child_pid":1,"session_id":"s"}}"#;
+        let empty_command = command_json("").replace("\"command\":\"date\"", "\"command\":\"\"");
+        assert!(matches!(
+            parse_default_webhook_body(invalid_access.as_bytes()),
+            Err(ProtocolError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            parse_default_webhook_body(invalid_protocol.as_bytes()),
+            Err(ProtocolError::InvalidJson(_))
+        ));
+        assert_eq!(
+            parse_default_webhook_body(empty_command.as_bytes()).unwrap_err(),
+            ProtocolError::EmptyField("command")
+        );
     }
 }

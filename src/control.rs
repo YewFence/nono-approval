@@ -57,7 +57,7 @@ pub struct ApprovalList {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ApprovalView {
-    Pending(ApprovalDetail),
+    Pending(Box<ApprovalDetail>),
     Completed(CompletedApproval),
 }
 
@@ -313,7 +313,7 @@ async fn show_response(
     match broker.show(approval_id).await {
         Ok(ShowApproval::Pending(mut detail)) => {
             if !debug {
-                detail.content.debug_fields.clear();
+                detail.debug = None;
             }
             json_response(StatusCode::OK, &ApprovalView::Pending(detail))
         }
@@ -335,9 +335,11 @@ async fn decision_response(
             error_response(StatusCode::CONFLICT, "approval is no longer pending")
         }
         Err(BrokerError::NotFound) => error_response(StatusCode::NOT_FOUND, "approval not found"),
-        Err(BrokerError::EmptyDenialReason | BrokerError::DenialReasonTooLarge) => {
-            error_response(StatusCode::BAD_REQUEST, "invalid denial reason")
-        }
+        Err(
+            BrokerError::EmptyDenialReason
+            | BrokerError::NullDenialReason
+            | BrokerError::DenialReasonTooLarge,
+        ) => error_response(StatusCode::BAD_REQUEST, "invalid denial reason"),
         Err(_) => error_response(StatusCode::BAD_REQUEST, "decision rejected"),
     }
 }

@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::broker::{ApprovalId, TerminalState};
+use crate::broker::{ApprovalId, ResponseDeliveryOutcome, TerminalState};
+use crate::display::sanitize;
 use crate::protocol::IncomingApproval;
 use crate::runtime_path::{RuntimePathError, ensure_owner_directory};
 
@@ -134,7 +135,9 @@ impl DebugCapture {
         source: &str,
         reason: Option<&str>,
         wait_duration: Duration,
+        response_delivery_outcome: ResponseDeliveryOutcome,
     ) {
+        let reason = reason.map(sanitize);
         self.append(&json!({
             "schema_version": 1,
             "event": "request_completed",
@@ -143,7 +146,7 @@ impl DebugCapture {
             "decision_source": source,
             "reason": reason,
             "wait_duration_ms": wait_duration.as_millis(),
-            "response_delivery_outcome": "pending",
+            "response_delivery_outcome": response_delivery_outcome,
         }));
     }
 
@@ -163,16 +166,18 @@ impl DebugCapture {
                 return;
             }
         };
-        let result = state
-            .file
-            .as_mut()
-            .expect("active capture file is present")
-            .write_all(&line)
-            .and_then(|()| {
-                let file = state.file.as_mut().expect("active capture file is present");
+        let result = state.file.as_mut().map_or_else(
+            || {
+                Err(io::Error::other(
+                    "capture file is unavailable without a recorded failure",
+                ))
+            },
+            |file| {
+                file.write_all(&line)?;
                 file.write_all(b"\n")?;
                 file.flush()
-            });
+            },
+        );
         if let Err(error) = result {
             let category = format!("io:{:?}", error.kind());
             state.file = None;
@@ -257,10 +262,15 @@ fn managed_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
-    use super::{DebugCapture, DebugCaptureError, clean_captures, list_captures};
+    use super::{
+        DebugCapture, DebugCaptureError, DebugCaptureStatus, clean_captures, list_captures,
+    };
+    use crate::broker::{ApprovalId, ResponseDeliveryOutcome, TerminalState};
+    use crate::protocol::parse_default_webhook_body;
 
     #[test]
     fn creates_lists_and_cleans_managed_capture() {
@@ -281,5 +291,40 @@ mod tests {
             list_captures(temporary.path()),
             Err(DebugCaptureError::UnsafeEntry(_))
         ));
+    }
+
+    #[test]
+    fn records_sanitized_completion_with_explicit_delivery_outcome() {
+        let temporary = tempdir().unwrap();
+        let capture = DebugCapture::create(temporary.path()).unwrap();
+        let path = match capture.status() {
+            DebugCaptureStatus::Enabled { path } => path,
+            status => panic!("unexpected capture status: {status:?}"),
+        };
+        let incoming = parse_default_webhook_body(
+            br#"{"backend":"local","request":{"capability_type":"command","request_id":"r1","command":"date","args":["date"],"caller":"session","intercept_rule":"approve","reason":null,"child_pid":1,"session_id":"s1"}}"#,
+        )
+        .unwrap();
+        let approval_id: ApprovalId = "appr_0123456789abcdef".parse().unwrap();
+        capture.record_received(&approval_id, &incoming, "2026-07-29T00:00:00Z");
+        capture.record_completed(
+            &approval_id,
+            TerminalState::Denied,
+            "control",
+            Some("line\nnext"),
+            Duration::from_millis(25),
+            ResponseDeliveryOutcome::NotObserved,
+        );
+        drop(capture);
+
+        let records = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["event"], "request_received");
+        assert_eq!(records[1]["reason"], "line\\nnext");
+        assert_eq!(records[1]["response_delivery_outcome"], "not_observed");
     }
 }

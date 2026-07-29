@@ -13,7 +13,9 @@ use tokio::time::Instant;
 
 use crate::debug_capture::DebugCapture;
 use crate::display::{ApprovalDetailContent, sanitize};
-use crate::protocol::{IncomingApproval, WIRE_ADAPTER_VERSION, WebhookDecision};
+use crate::protocol::{
+    IncomingApproval, KnownApprovalRequest, SourceKind, WIRE_ADAPTER_VERSION, WebhookDecision,
+};
 
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(270);
 pub const DEFAULT_MAX_PENDING: usize = 64;
@@ -115,6 +117,15 @@ pub struct ApprovalDetail {
     pub deadline: String,
     #[serde(flatten)]
     pub content: ApprovalDetailContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<ApprovalDebugMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalDebugMetadata {
+    pub claimed_backend: String,
+    pub source_kind: SourceKind,
+    pub wire_request: KnownApprovalRequest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -126,8 +137,14 @@ pub struct CompletedApproval {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ShowApproval {
-    Pending(ApprovalDetail),
+    Pending(Box<ApprovalDetail>),
     Completed(CompletedApproval),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseDeliveryOutcome {
+    NotObserved,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -146,6 +163,8 @@ pub enum BrokerError {
     NotPending,
     #[error("denial reason must not be empty")]
     EmptyDenialReason,
+    #[error("denial reason must not consist only of NUL characters")]
+    NullDenialReason,
     #[error("denial reason exceeds {MAX_DENIAL_REASON_BYTES} bytes")]
     DenialReasonTooLarge,
     #[error("operating-system randomness failed: {0}")]
@@ -161,6 +180,9 @@ pub fn validate_denial_reason(reason: &str) -> Result<(), BrokerError> {
     if reason.is_empty() {
         return Err(BrokerError::EmptyDenialReason);
     }
+    if reason.chars().all(|character| character == '\0') {
+        return Err(BrokerError::NullDenialReason);
+    }
     if reason.len() > MAX_DENIAL_REASON_BYTES {
         return Err(BrokerError::DenialReasonTooLarge);
     }
@@ -169,9 +191,12 @@ pub fn validate_denial_reason(reason: &str) -> Result<(), BrokerError> {
 
 struct PendingApproval {
     approval_id: ApprovalId,
+    claimed_backend: String,
     session_id: String,
     request_id: String,
     capability_type: String,
+    wire_request: KnownApprovalRequest,
+    raw_request: Box<serde_json::value::RawValue>,
     detail: ApprovalDetailContent,
     received_at: SystemTime,
     deadline_wall: SystemTime,
@@ -186,6 +211,7 @@ struct Tombstone {
     received_at: SystemTime,
     completed_at: SystemTime,
     wait_duration: Duration,
+    response_delivery_outcome: ResponseDeliveryOutcome,
     identity_hash: blake3::Hash,
     wire_adapter_version: u32,
 }
@@ -335,15 +361,24 @@ impl Broker {
         if let Some(debug_capture) = &self.debug_capture {
             debug_capture.record_received(&approval_id, &incoming, &timestamp(deadline_wall));
         }
+        let IncomingApproval {
+            claimed_backend,
+            raw_request,
+            request,
+            detail,
+        } = incoming;
         let (decision_tx, receiver) = oneshot::channel();
         state.pending.insert(
             approval_id.clone(),
             PendingApproval {
                 approval_id: approval_id.clone(),
+                claimed_backend,
                 session_id: replay_key.0,
                 request_id: replay_key.1,
-                capability_type: incoming.request.capability_type().to_owned(),
-                detail: incoming.detail,
+                capability_type: request.capability_type().to_owned(),
+                wire_request: request,
+                raw_request,
+                detail,
                 received_at,
                 deadline_wall,
                 deadline,
@@ -392,12 +427,17 @@ impl Broker {
         self.expire_elapsed(&mut state);
         self.prune(&mut state);
         if let Some(pending) = state.pending.get(approval_id) {
-            return Ok(ShowApproval::Pending(ApprovalDetail {
+            return Ok(ShowApproval::Pending(Box::new(ApprovalDetail {
                 approval_id: pending.approval_id.clone(),
                 received_at: timestamp(pending.received_at),
                 deadline: timestamp(pending.deadline_wall),
                 content: pending.detail.clone(),
-            }));
+                debug: Some(ApprovalDebugMetadata {
+                    claimed_backend: pending.claimed_backend.clone(),
+                    source_kind: pending.wire_request.source_kind(),
+                    wire_request: pending.wire_request.clone(),
+                }),
+            })));
         }
         state
             .tombstones
@@ -554,6 +594,7 @@ impl Broker {
                 source,
                 reason,
                 wait_duration,
+                ResponseDeliveryOutcome::NotObserved,
             );
         }
         tracing::info!(
@@ -565,7 +606,11 @@ impl Broker {
         );
         let replay_key = (pending.session_id.clone(), pending.request_id.clone());
         let mut hasher = blake3::Hasher::new_keyed(&self.hash_key);
-        for value in [pending.session_id.as_bytes(), pending.request_id.as_bytes()] {
+        for value in [
+            pending.claimed_backend.as_bytes(),
+            pending.session_id.as_bytes(),
+            pending.request_id.as_bytes(),
+        ] {
             hasher.update(&(value.len() as u64).to_le_bytes());
             hasher.update(value);
         }
@@ -584,6 +629,7 @@ impl Broker {
             received_at: pending.received_at,
             completed_at,
             wait_duration,
+            response_delivery_outcome: ResponseDeliveryOutcome::NotObserved,
             identity_hash,
             wire_adapter_version: WIRE_ADAPTER_VERSION,
         });
@@ -610,9 +656,16 @@ impl Broker {
             !tombstone.capability_type.is_empty()
                 && tombstone.received_at <= tombstone.completed_at
                 && tombstone.wait_duration <= self.config.tombstone_ttl + DEFAULT_REQUEST_TIMEOUT
+                && tombstone.response_delivery_outcome == ResponseDeliveryOutcome::NotObserved
                 && tombstone.identity_hash != blake3::Hash::from_bytes([0; 32])
                 && tombstone.wire_adapter_version == WIRE_ADAPTER_VERSION
         }));
+        debug_assert!(
+            state
+                .pending
+                .values()
+                .all(|pending| !pending.raw_request.get().is_empty())
+        );
     }
 }
 
@@ -632,7 +685,10 @@ pub fn sanitized_denial_reason(reason: &str) -> String {
 mod tests {
     use std::time::Duration;
 
-    use super::{ApprovalId, Broker, BrokerConfig, BrokerError, ShowApproval, TerminalState};
+    use super::{
+        ApprovalId, Broker, BrokerConfig, BrokerError, MAX_DENIAL_REASON_BYTES, ShowApproval,
+        TerminalState, validate_denial_reason,
+    };
     use crate::protocol::{WebhookDecision, parse_default_webhook_body};
 
     fn incoming(request_id: &str, session_id: &str) -> crate::protocol::IncomingApproval {
@@ -648,6 +704,23 @@ mod tests {
         assert!("0123456789abcdef".parse::<ApprovalId>().is_err());
         assert!("appr_0123456789ABCDEF".parse::<ApprovalId>().is_err());
         assert!("appr_0123".parse::<ApprovalId>().is_err());
+    }
+
+    #[test]
+    fn validates_denial_reason_boundaries() {
+        assert_eq!(
+            validate_denial_reason(""),
+            Err(BrokerError::EmptyDenialReason)
+        );
+        assert_eq!(
+            validate_denial_reason("\0\0"),
+            Err(BrokerError::NullDenialReason)
+        );
+        assert!(validate_denial_reason(&"a".repeat(MAX_DENIAL_REASON_BYTES)).is_ok());
+        assert_eq!(
+            validate_denial_reason(&"a".repeat(MAX_DENIAL_REASON_BYTES + 1)),
+            Err(BrokerError::DenialReasonTooLarge)
+        );
     }
 
     #[tokio::test]

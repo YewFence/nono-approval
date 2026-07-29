@@ -20,7 +20,6 @@ pub struct ApprovalDetailContent {
     pub summary: String,
     pub source_kind: SourceKind,
     pub fields: Vec<DetailField>,
-    pub debug_fields: Vec<DetailField>,
 }
 
 impl ApprovalDetailContent {
@@ -160,7 +159,7 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
             ..
         } => {
             fields.push(field("Path", path));
-            fields.push(field("Access", access));
+            fields.push(field("Access", access.to_string()));
             optional_field(&mut fields, "Reason", reason.as_deref());
         }
         KnownApprovalRequest::Network {
@@ -172,7 +171,7 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
             ..
         } => {
             fields.push(field("Destination", format!("{host}:{port}")));
-            fields.push(field("Protocol", protocol));
+            fields.push(field("Protocol", protocol.to_string()));
             if !resolved_ips.is_empty() {
                 fields.push(field("Resolved IPs", resolved_ips.join(", ")));
             }
@@ -180,22 +179,11 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
         }
     }
 
-    let debug_fields = vec![
-        field("Request ID", request.request_id()),
-        field("Session ID", request.session_id()),
-        field("Child PID", request.child_pid().to_string()),
-        field(
-            "Wire DTO",
-            serde_json::to_string(request).unwrap_or_else(|_| "unavailable".to_owned()),
-        ),
-    ];
-
     ApprovalDetailContent {
         capability_type: request.capability_type().to_owned(),
         summary: summary(request),
         source_kind: request.source_kind(),
         fields,
-        debug_fields,
     }
 }
 
