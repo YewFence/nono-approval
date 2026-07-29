@@ -217,7 +217,7 @@ aarch64-apple-darwin
 - `README.md`；
 - 适用于该平台的 systemd user service 或 launchd agent 示例。
 
-Release 同时提供 `SHA256SUMS`，覆盖所有归档。MVP 不提供 musl target、deb/rpm、Homebrew tap、curl 安装脚本或其他系统包；这些分发渠道需要独立维护和验证，不进入首版发布链。
+MVP 不提供 musl target、deb/rpm、Homebrew tap、curl 安装脚本或其他系统包；这些分发渠道需要独立维护和验证，不进入首版发布链。
 
 首个公开版本还必须包含完整 crates.io package metadata 和可复现的 release 构建说明。
 

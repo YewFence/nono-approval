@@ -42,7 +42,6 @@
 3. profile 配置指南；
 4. Pi、Claude Code、Codex 端到端验证；
 5. MIT License、crates.io metadata 与四目标 GitHub Release 构建；
-6. 为全部 `.tar.gz` 生成并验证 `SHA256SUMS`。
 
 ## 单元测试
 
@@ -216,6 +215,6 @@
 - 提供 systemd/launchd 示例但不自动配置；
 - MIT、crates.io 与 GitHub Releases 交付材料完备；
 - GitHub Release 覆盖 Linux/macOS 的 x86_64/aarch64 GNU/Darwin 四目标；
-- 每个归档包含二进制、LICENSE、README 和平台适用的服务示例，`SHA256SUMS` 校验通过；
+- 每个归档包含二进制、LICENSE、README 和平台适用的服务示例；
 - MVP 发布流水线不包含 musl、deb/rpm、Homebrew tap 或安装脚本；
 - Linux/macOS 自动化和真实 nono E2E 通过。

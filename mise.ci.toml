@@ -108,3 +108,11 @@ fi
 description = "Build and package a release binary"
 file = "scripts/package-release"
 env = { RELEASE_BINARY = "{{ vars.rust_binary_name }}" }
+
+[tasks.'release:checksums']
+description = "Generate and verify SHA256SUMS for release archives"
+file = "scripts/checksum-release"
+
+[tasks.'release:publish-crate']
+description = "Publish the locked Cargo package to crates.io"
+run = "cargo publish --locked"

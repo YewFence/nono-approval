@@ -157,7 +157,7 @@ TUI 持续等待 pending request，展示完整已知操作，用户按 `a` 或 
 - 仓库提供 systemd user service 与 launchd agent 示例，不自动配置；
 - MIT License；
 - crates.io 与 GitHub Releases。
-- GitHub Releases 提供 Linux/macOS 的 x86_64 与 aarch64 GNU/Darwin 归档及 `SHA256SUMS`；
+- GitHub Releases 提供 Linux/macOS 的 x86_64 与 aarch64 GNU/Darwin 归档；
 - MVP 不发布 musl、deb/rpm、Homebrew tap 或安装脚本。
 
 ### 平台目录

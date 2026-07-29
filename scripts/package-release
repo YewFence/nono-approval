@@ -5,7 +5,7 @@ set -euo pipefail
 : "${RELEASE_PLATFORM:?RELEASE_PLATFORM is required}"
 : "${RELEASE_TAG:?RELEASE_TAG is required}"
 
-binary_name="${RELEASE_BINARY:-rust-template}"
+binary_name="${RELEASE_BINARY:-nono-approval}"
 output_dir="${RELEASE_OUTPUT_DIR:-dist}"
 binary_suffix=""
 
@@ -23,9 +23,24 @@ staging_dir="${output_dir}/${archive_stem}"
 mkdir -p "${staging_dir}"
 cp "${source_binary}" "${staging_dir}/${binary_name}${binary_suffix}"
 cp README.md LICENSE "${staging_dir}/"
+case "${RELEASE_TARGET}" in
+  *-linux-*)
+    service_file="nono-approval.service"
+    cp "examples/systemd/${service_file}" "${staging_dir}/"
+    ;;
+  *-apple-darwin)
+    service_file="dev.yewfence.nono-approval.plist"
+    cp "examples/launchd/${service_file}" "${staging_dir}/"
+    ;;
+  *)
+    echo "unsupported release target ${RELEASE_TARGET}"
+    exit 1
+    ;;
+esac
 tar -C "${output_dir}" -czf "${output_dir}/${archive_stem}.tar.gz" "${archive_stem}"
 rm "${staging_dir}/${binary_name}${binary_suffix}"
 rm "${staging_dir}/README.md" "${staging_dir}/LICENSE"
+rm "${staging_dir}/${service_file}"
 rmdir "${staging_dir}"
 
 printf '%s\n' "${output_dir}/${archive_stem}.tar.gz"
