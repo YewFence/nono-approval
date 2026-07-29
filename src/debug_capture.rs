@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -16,7 +16,9 @@ use thiserror::Error;
 use crate::broker::{ApprovalId, ResponseDeliveryOutcome, TerminalState};
 use crate::display::sanitize;
 use crate::protocol::IncomingApproval;
-use crate::runtime_path::{RuntimePathError, ensure_owner_directory};
+use crate::runtime_path::{
+    RuntimePathError, ensure_owner_directory, validate_owner_directory, validate_path_components,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -86,6 +88,7 @@ impl DebugCapture {
             .append(true)
             .mode(0o600)
             .open(&path)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             inner: Arc::new(Mutex::new(CaptureState {
                 path,
@@ -201,20 +204,20 @@ pub fn list_captures(state_dir: &Path) -> Result<Vec<CaptureInfo>, DebugCaptureE
     let directory = capture_directory(state_dir);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            validate_path_components(&directory)?;
+            return Ok(Vec::new());
+        }
         Err(error) => return Err(error.into()),
     };
+    validate_owner_directory(&directory)?;
     let mut captures = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if metadata.file_type().is_symlink()
-            || !metadata.is_file()
-            || metadata.uid() != getuid().as_raw()
-            || !managed_name(&name)
-        {
+        if !valid_capture_file(&metadata, &name) {
             return Err(DebugCaptureError::UnsafeEntry(path));
         }
         captures.push(CaptureInfo {
@@ -237,9 +240,22 @@ pub fn clean_captures(state_dir: &Path) -> Result<usize, DebugCaptureError> {
     let captures = list_captures(state_dir)?;
     let directory = capture_directory(state_dir);
     for capture in &captures {
-        fs::remove_file(directory.join(&capture.name))?;
+        let path = directory.join(&capture.name);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !valid_capture_file(&metadata, &capture.name) {
+            return Err(DebugCaptureError::UnsafeEntry(path));
+        }
+        fs::remove_file(path)?;
     }
     Ok(captures.len())
+}
+
+fn valid_capture_file(metadata: &fs::Metadata, name: &str) -> bool {
+    !metadata.file_type().is_symlink()
+        && metadata.is_file()
+        && metadata.uid() == getuid().as_raw()
+        && metadata.permissions().mode() & 0o777 == 0o600
+        && managed_name(name)
 }
 
 fn managed_name(name: &str) -> bool {
@@ -262,6 +278,7 @@ fn managed_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::time::Duration;
 
     use tempfile::tempdir;
@@ -286,6 +303,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         let directory = temporary.path().join("debug-captures");
         fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(directory.join("notes.txt"), "unsafe").unwrap();
         assert!(matches!(
             list_captures(temporary.path()),

@@ -241,12 +241,14 @@ async fn list(args: ListArgs) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     println!("ID                     TYPE        REQUEST");
+    let terminal_width = crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width));
+    let summary_width = terminal_width.saturating_sub(34);
     for approval in approvals {
         println!(
             "{:<21} {:<11} {}",
             approval.approval_id,
             approval.capability_type,
-            truncate_summary(&approval.summary, 60)
+            truncate_summary(&approval.summary, summary_width)
         );
     }
     Ok(())

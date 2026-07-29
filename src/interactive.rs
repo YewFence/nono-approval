@@ -10,8 +10,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use thiserror::Error;
 
-use crate::broker::{ApprovalDetail, ApprovalId, ApprovalSummary, DEFAULT_DENIAL_REASON};
+use crate::broker::{
+    ApprovalDetail, ApprovalId, ApprovalSummary, DEFAULT_DENIAL_REASON, validate_denial_reason,
+};
 use crate::control::{ApprovalView, ControlClient, DebugCaptureStatus, DecisionRequest};
+use crate::display::{sanitize, truncate_summary};
 
 const CONNECTED_POLL: Duration = Duration::from_millis(500);
 const DISCONNECTED_POLL: Duration = Duration::from_secs(1);
@@ -188,8 +191,8 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 reason.error = None;
             }
             KeyCode::Enter => {
-                if reason.value.is_empty() {
-                    reason.error = Some("Reason must not be empty".to_owned());
+                if let Err(error) = validate_denial_reason(&reason.value) {
+                    reason.error = Some(error.to_string());
                 } else {
                     let approval_id = reason.approval_id.clone();
                     let value = reason.value.clone();
@@ -280,14 +283,18 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .approvals
         .iter()
         .map(|approval| {
+            let prefix = format!("{} · ", approval.capability_type);
+            let available = usize::from(area.width.saturating_sub(2));
+            let summary_width =
+                available.saturating_sub(unicode_width::UnicodeWidthStr::width(prefix.as_str()));
             ListItem::new(vec![
                 Line::from(Span::styled(
                     approval.approval_id.to_string(),
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
                 Line::from(format!(
-                    "{} · {}",
-                    approval.capability_type, approval.summary
+                    "{prefix}{}",
+                    truncate_summary(&approval.summary, summary_width)
                 )),
             ])
         })
@@ -348,8 +355,8 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         },
         |reason| {
             reason.error.as_ref().map_or_else(
-                || format!("Deny reason: {}", reason.value),
-                |error| format!("Deny reason: {} · {error}", reason.value),
+                || format!("Deny reason: {}", sanitize(&reason.value)),
+                |error| format!("Deny reason: {} · {error}", sanitize(&reason.value)),
             )
         },
     );
@@ -360,18 +367,82 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 mod tests {
     use std::path::Path;
 
-    use super::App;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::{App, ReasonInput, handle_key, render};
+    use crate::broker::{ApprovalId, ApprovalSummary};
+
+    fn approval() -> ApprovalSummary {
+        ApprovalSummary {
+            approval_id: "appr_0123456789abcdef".parse().unwrap(),
+            capability_type: "command".to_owned(),
+            summary: "a very long request summary that must visibly truncate".to_owned(),
+            received_at: "2026-07-29T00:00:00Z".to_owned(),
+            deadline: "2026-07-29T00:04:30Z".to_owned(),
+        }
+    }
 
     #[test]
     fn disconnect_clears_all_request_state() {
         let mut app = App::new(Path::new("/tmp/unreachable-control.sock"));
         app.connected = true;
+        app.approvals.push(approval());
+        app.selected = Some(0);
         app.detail_scroll = 42;
         app.show_detail_panel = true;
+        app.reason = Some(ReasonInput {
+            approval_id: "appr_0123456789abcdef".parse().unwrap(),
+            value: "draft".to_owned(),
+            error: None,
+        });
         app.disconnect();
         assert!(!app.connected);
         assert!(app.approvals.is_empty());
         assert!(app.detail.is_none());
         assert_eq!(app.detail_scroll, 0);
+        assert!(app.selected.is_none());
+        assert!(app.reason.is_none());
+    }
+
+    #[test]
+    fn renders_stable_wide_and_narrow_layouts() {
+        for (width, expected) in [(100, "Decision detail"), (36, "Pending approvals")] {
+            let backend = TestBackend::new(width, 12);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = App::new(Path::new("/tmp/unreachable-control.sock"));
+            app.connected = true;
+            app.approvals.push(approval());
+            app.selected = Some(0);
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(rendered.contains(expected));
+            if width == 36 {
+                assert!(rendered.contains('…'));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn enter_never_approves_and_nul_only_reason_stays_in_editor() {
+        let mut app = App::new(Path::new("/tmp/unreachable-control.sock"));
+        app.approvals.push(approval());
+        app.selected = Some(0);
+        assert!(!handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await);
+
+        app.reason = Some(ReasonInput {
+            approval_id: "appr_0123456789abcdef".parse::<ApprovalId>().unwrap(),
+            value: "\0\0".to_owned(),
+            error: None,
+        });
+        assert!(!handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await);
+        assert!(app.reason.as_ref().unwrap().error.is_some());
     }
 }
