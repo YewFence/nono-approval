@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use shlex::try_quote;
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 use vte::{Params, Parser, Perform};
 
 use crate::protocol::{KnownApprovalRequest, SourceKind};
@@ -20,7 +21,6 @@ pub struct ApprovalDetailContent {
     pub summary: String,
     pub source_kind: SourceKind,
     pub fields: Vec<DetailField>,
-    pub debug_fields: Vec<DetailField>,
 }
 
 impl ApprovalDetailContent {
@@ -78,17 +78,27 @@ pub fn sanitize(value: &str) -> String {
 }
 
 #[must_use]
-pub fn truncate_summary(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
+pub fn truncate_summary(value: &str, max_width: usize) -> String {
+    if value.width() <= max_width {
         return value.to_owned();
     }
-    if max_chars == 0 {
+    if max_width == 0 {
         return String::new();
     }
-    if max_chars == 1 {
+    if max_width == 1 {
         return "…".to_owned();
     }
-    let mut result: String = value.chars().take(max_chars - 1).collect();
+    let content_width = max_width - 1;
+    let mut width = 0;
+    let mut result = String::new();
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or_default();
+        if width + character_width > content_width {
+            break;
+        }
+        result.push(character);
+        width += character_width;
+    }
     result.push('…');
     result
 }
@@ -160,7 +170,7 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
             ..
         } => {
             fields.push(field("Path", path));
-            fields.push(field("Access", access));
+            fields.push(field("Access", access.to_string()));
             optional_field(&mut fields, "Reason", reason.as_deref());
         }
         KnownApprovalRequest::Network {
@@ -172,7 +182,7 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
             ..
         } => {
             fields.push(field("Destination", format!("{host}:{port}")));
-            fields.push(field("Protocol", protocol));
+            fields.push(field("Protocol", protocol.to_string()));
             if !resolved_ips.is_empty() {
                 fields.push(field("Resolved IPs", resolved_ips.join(", ")));
             }
@@ -180,18 +190,11 @@ pub fn build_detail(request: &KnownApprovalRequest) -> ApprovalDetailContent {
         }
     }
 
-    let debug_fields = vec![
-        field("Request ID", request.request_id()),
-        field("Session ID", request.session_id()),
-        field("Child PID", request.child_pid().to_string()),
-    ];
-
     ApprovalDetailContent {
         capability_type: request.capability_type().to_owned(),
         summary: summary(request),
         source_kind: request.source_kind(),
         fields,
-        debug_fields,
     }
 }
 
@@ -237,5 +240,6 @@ mod tests {
     fn truncates_only_navigation_summaries() {
         assert_eq!(truncate_summary("abcdef", 4), "abc…");
         assert_eq!(truncate_summary("abc", 4), "abc");
+        assert_eq!(truncate_summary("你好世界", 5), "你好…");
     }
 }

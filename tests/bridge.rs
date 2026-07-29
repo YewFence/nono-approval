@@ -9,12 +9,12 @@ use hyper::header::CONTENT_TYPE;
 use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use nono_approval::broker::{Broker, BrokerConfig, ShowApproval, TerminalState};
-use nono_approval::control::{ControlClient, ControlContext, DebugCaptureStatus, DecisionRequest};
+use nono_approval::control::{ControlClient, ControlContext, DecisionRequest};
 use nono_approval::display::MAX_DETAIL_BYTES;
 use nono_approval::protocol::{DEFAULT_MAX_BODY_BYTES, WebhookDecision};
 use nono_approval::webhook::{WEBHOOK_PATH, WebhookContext};
 use tempfile::tempdir;
-use tokio::net::{TcpListener, TcpStream, UnixListener};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 #[tokio::test]
 async fn bridges_webhook_to_exact_control_decision() {
@@ -26,7 +26,8 @@ async fn bridges_webhook_to_exact_control_decision() {
     let broker = Broker::new(BrokerConfig {
         request_timeout: Duration::from_secs(2),
         ..BrokerConfig::default()
-    });
+    })
+    .unwrap();
 
     let webhook_task = tokio::spawn(nono_approval::webhook::serve(
         tcp_listener,
@@ -44,7 +45,7 @@ async fn bridges_webhook_to_exact_control_decision() {
             webhook_listen: address.to_string(),
             max_pending: 64,
             max_per_session: 8,
-            debug_capture: DebugCaptureStatus::Disabled,
+            debug_capture: None,
         },
     ));
 
@@ -69,6 +70,40 @@ async fn bridges_webhook_to_exact_control_decision() {
     ));
 
     webhook_task.abort();
+    control_task.abort();
+}
+
+#[tokio::test]
+async fn rejects_oversized_control_body_without_deciding() {
+    let temporary = tempdir().unwrap();
+    let socket_path = temporary.path().join("control.sock");
+    let unix_listener = UnixListener::bind(&socket_path).unwrap();
+    let broker = Broker::new(BrokerConfig::default()).unwrap();
+    let control_task = tokio::spawn(nono_approval::control::serve(
+        unix_listener,
+        ControlContext {
+            broker: broker.clone(),
+            started_at: Instant::now(),
+            webhook_listen: "127.0.0.1:0".to_owned(),
+            max_pending: 64,
+            max_per_session: 8,
+            debug_capture: None,
+        },
+    ));
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/approvals/appr_0123456789abcdef/decision")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(vec![b'x'; 8 * 1024 + 1])))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(broker.pending_count().await, 0);
     control_task.abort();
 }
 

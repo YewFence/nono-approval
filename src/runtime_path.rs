@@ -32,6 +32,8 @@ pub enum RuntimePathError {
     NotDirectory(PathBuf),
     #[error("runtime path must not be a symlink: {0}")]
     Symlink(PathBuf),
+    #[error("runtime path is not owner-only: {0}")]
+    WrongPermissions(PathBuf),
     #[error("control socket path is too long for this platform: {0}")]
     SocketPathTooLong(PathBuf),
     #[error("unsafe existing control socket path: {0}")]
@@ -74,6 +76,7 @@ impl ProjectPaths {
 ///
 /// Returns an error for symlinks, unexpected file types, wrong ownership, or I/O failures.
 pub fn ensure_owner_directory(path: &Path) -> Result<(), RuntimePathError> {
+    validate_path_components(path)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -89,7 +92,51 @@ pub fn ensure_owner_directory(path: &Path) -> Result<(), RuntimePathError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir_all(path)?,
         Err(error) => return Err(error.into()),
     }
+    validate_path_components(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+/// Validates an existing owner-only managed directory without modifying it.
+///
+/// # Errors
+///
+/// Returns an error for symlinked path components, unexpected types, wrong ownership,
+/// non-owner-only permissions, or I/O failures.
+pub fn validate_owner_directory(path: &Path) -> Result<(), RuntimePathError> {
+    validate_path_components(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(RuntimePathError::NotDirectory(path.to_path_buf()));
+    }
+    if metadata.uid() != getuid().as_raw() {
+        return Err(RuntimePathError::WrongOwner(path.to_path_buf()));
+    }
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(RuntimePathError::WrongPermissions(path.to_path_buf()));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_path_components(path: &Path) -> Result<(), RuntimePathError> {
+    let mut components = path.ancestors().collect::<Vec<_>>();
+    components.reverse();
+    for component in components
+        .into_iter()
+        .filter(|component| !component.as_os_str().is_empty())
+    {
+        match fs::symlink_metadata(component) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(RuntimePathError::Symlink(component.to_path_buf()));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(RuntimePathError::NotDirectory(component.to_path_buf()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
@@ -141,11 +188,11 @@ pub async fn remove_stale_socket(path: &Path) -> Result<(), RuntimePathError> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use tempfile::tempdir;
 
-    use super::ensure_owner_directory;
+    use super::{RuntimePathError, ensure_owner_directory, validate_owner_directory};
 
     #[test]
     fn creates_owner_only_directory() {
@@ -154,5 +201,31 @@ mod tests {
         ensure_owner_directory(&path).unwrap();
         let mode = path.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+        validate_owner_directory(&path).unwrap();
+    }
+
+    #[test]
+    fn rejects_symlinked_path_components() {
+        let temporary = tempdir().unwrap();
+        let real = temporary.path().join("real");
+        let link = temporary.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        assert!(matches!(
+            ensure_owner_directory(&link.join("managed")),
+            Err(RuntimePathError::Symlink(path)) if path == link
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_permissive_directory() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("runtime");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            validate_owner_directory(&path),
+            Err(RuntimePathError::WrongPermissions(error_path)) if error_path == path
+        ));
     }
 }

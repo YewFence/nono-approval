@@ -21,6 +21,9 @@ use crate::broker::{
     ApprovalDetail, ApprovalId, ApprovalSummary, Broker, BrokerError, CompletedApproval,
     ShowApproval, TerminalState,
 };
+use crate::debug_capture::DebugCapture;
+pub use crate::debug_capture::DebugCaptureStatus;
+use crate::display::MAX_DETAIL_BYTES;
 use crate::peer_identity::verify_owner;
 use crate::protocol::WebhookDecision;
 
@@ -33,15 +36,7 @@ pub struct ControlContext {
     pub webhook_listen: String,
     pub max_pending: usize,
     pub max_per_session: usize,
-    pub debug_capture: DebugCaptureStatus,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum DebugCaptureStatus {
-    Disabled,
-    Enabled { path: PathBuf },
-    Failed { error_category: String },
+    pub debug_capture: Option<DebugCapture>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -63,7 +58,7 @@ pub struct ApprovalList {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ApprovalView {
-    Pending(ApprovalDetail),
+    Pending(Box<ApprovalDetail>),
     Completed(CompletedApproval),
 }
 
@@ -245,7 +240,10 @@ async fn handle(
             max_pending: context.max_pending,
             max_per_session: context.max_per_session,
             webhook_listen: context.webhook_listen.clone(),
-            debug_capture: context.debug_capture.clone(),
+            debug_capture: context
+                .debug_capture
+                .as_ref()
+                .map_or(DebugCaptureStatus::Disabled, DebugCapture::status),
         };
         return Ok(json_response(StatusCode::OK, &status));
     }
@@ -287,15 +285,9 @@ async fn handle_approval(
         let Ok(approval_id) = id.parse::<ApprovalId>() else {
             return error_response(StatusCode::BAD_REQUEST, "invalid approval ID");
         };
-        let body = match request.into_body().collect().await {
-            Ok(body) => body.to_bytes(),
-            Err(_) => {
-                return error_response(StatusCode::BAD_REQUEST, "invalid decision body");
-            }
-        };
-        if body.len() > MAX_CONTROL_BODY_BYTES {
+        let Ok(body) = read_decision_body(request.into_body()).await else {
             return error_response(StatusCode::BAD_REQUEST, "invalid decision body");
-        }
+        };
         let Ok(request) = serde_json::from_slice::<DecisionRequest>(&body) else {
             return error_response(StatusCode::BAD_REQUEST, "invalid decision body");
         };
@@ -316,15 +308,44 @@ async fn show_response(
     match broker.show(approval_id).await {
         Ok(ShowApproval::Pending(mut detail)) => {
             if !debug {
-                detail.content.debug_fields.clear();
+                detail.debug = None;
             }
-            json_response(StatusCode::OK, &ApprovalView::Pending(detail))
+            limited_detail_response(&ApprovalView::Pending(detail))
         }
         Ok(ShowApproval::Completed(completed)) => {
             json_response(StatusCode::OK, &ApprovalView::Completed(completed))
         }
         Err(_) => error_response(StatusCode::NOT_FOUND, "approval not found"),
     }
+}
+
+async fn read_decision_body(mut body: Incoming) -> Result<Vec<u8>, ()> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| ())?;
+        if let Ok(data) = frame.into_data() {
+            if bytes.len().saturating_add(data.len()) > MAX_CONTROL_BODY_BYTES {
+                return Err(());
+            }
+            bytes.extend_from_slice(&data);
+        }
+    }
+    Ok(bytes)
+}
+
+fn limited_detail_response(value: &ApprovalView) -> Response<Full<Bytes>> {
+    let body = serde_json::to_vec(value).unwrap_or_default();
+    if body.len() > MAX_DETAIL_BYTES {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "approval detail response exceeds the control limit",
+        );
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
 }
 
 async fn decision_response(
@@ -338,9 +359,11 @@ async fn decision_response(
             error_response(StatusCode::CONFLICT, "approval is no longer pending")
         }
         Err(BrokerError::NotFound) => error_response(StatusCode::NOT_FOUND, "approval not found"),
-        Err(BrokerError::EmptyDenialReason | BrokerError::DenialReasonTooLarge) => {
-            error_response(StatusCode::BAD_REQUEST, "invalid denial reason")
-        }
+        Err(
+            BrokerError::EmptyDenialReason
+            | BrokerError::NullDenialReason
+            | BrokerError::DenialReasonTooLarge,
+        ) => error_response(StatusCode::BAD_REQUEST, "invalid denial reason"),
         Err(_) => error_response(StatusCode::BAD_REQUEST, "decision rejected"),
     }
 }

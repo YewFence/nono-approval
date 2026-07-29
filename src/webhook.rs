@@ -48,33 +48,34 @@ async fn handle(
     context: Arc<WebhookContext>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if request.method() != Method::POST {
-        return Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED));
+        return Ok(logged_empty_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+        ));
     }
     if request.uri().path() != WEBHOOK_PATH {
-        return Ok(empty_response(StatusCode::NOT_FOUND));
+        return Ok(logged_empty_response(StatusCode::NOT_FOUND, "unknown_path"));
     }
-    let valid_content_type = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("application/json"));
-    if !valid_content_type {
-        return Ok(error_response(
+    if !has_json_content_type(&request) {
+        return Ok(logged_error_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
             "content-type must be application/json",
         ));
     }
     let body = match read_limited(request.into_body(), context.max_body_bytes).await {
         Ok(body) => body,
         Err(ReadBodyError::TooLarge) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
                 "request body is too large",
             ));
         }
         Err(ReadBodyError::Transport) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::BAD_REQUEST,
+                "body_transport",
                 "could not read request body",
             ));
         }
@@ -83,20 +84,23 @@ async fn handle(
     {
         Ok(incoming) => incoming,
         Err(ProtocolError::BodyTooLarge { .. }) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
                 "request body is too large",
             ));
         }
         Err(ProtocolError::DetailTooLarge { .. }) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::UNPROCESSABLE_ENTITY,
+                "detail_too_large",
                 "approval detail is too large",
             ));
         }
         Err(_) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::BAD_REQUEST,
+                "invalid_request",
                 "invalid webhook request",
             ));
         }
@@ -104,24 +108,32 @@ async fn handle(
     let submission = match context.broker.submit(incoming).await {
         Ok(submission) => submission,
         Err(BrokerError::DuplicateRequest) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::CONFLICT,
+                "duplicate_request",
                 "duplicate approval request",
             ));
         }
         Err(BrokerError::PerSessionCapacity) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::TOO_MANY_REQUESTS,
+                "per_session_capacity",
                 "per-session pending limit reached",
             ));
         }
         Err(BrokerError::GlobalCapacity) => {
-            return Ok(error_response(
+            return Ok(logged_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
+                "global_capacity",
                 "global pending limit reached",
             ));
         }
         Err(_) => {
+            tracing::error!(
+                status = 500,
+                error_category = "broker_registration",
+                "webhook rejected"
+            );
             return Ok(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "could not register approval request",
@@ -129,6 +141,31 @@ async fn handle(
         }
     };
     Ok(json_response(StatusCode::OK, &submission.wait().await))
+}
+
+fn has_json_content_type(request: &Request<Incoming>) -> bool {
+    request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/json"))
+}
+
+fn logged_error_response(
+    status: StatusCode,
+    error_category: &'static str,
+    error: &str,
+) -> Response<Full<Bytes>> {
+    tracing::warn!(status = status.as_u16(), error_category, "webhook rejected");
+    error_response(status, error)
+}
+
+fn logged_empty_response(
+    status: StatusCode,
+    error_category: &'static str,
+) -> Response<Full<Bytes>> {
+    tracing::warn!(status = status.as_u16(), error_category, "webhook rejected");
+    empty_response(status)
 }
 
 enum ReadBodyError {
