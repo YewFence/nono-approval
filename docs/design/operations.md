@@ -9,7 +9,7 @@ MVP 同时支持 Linux 与 macOS。Broker、协议、CLI/TUI 和展示逻辑保�
 - runtime path；
 - control peer identity。
 
-Linux 使用 `SO_PEERCRED`，macOS 使用 `LOCAL_PEERPID` 与 `getpeereid`。安全要求见 [安全模型](security.md)。
+Linux 使用 `SO_PEERCRED`，macOS 使用 `LOCAL_PEERPID` 与 `getpeereid`。两端都通过 `nix` 提供的安全封装实现；生产 crate 保持 `unsafe_code = "forbid"`，不直接调用 `libc`。安全要求见 [安全模型](security.md)。
 
 ## Runtime Path
 
@@ -175,7 +175,7 @@ impl Broker {
 - `directories`：Linux/macOS 平台原生 config、state/cache 与 runtime 基础目录；
 - `serde`、`serde_json`：wire/control DTO；
 - `tracing`：结构化运行日志；
-- `nix` 或受控 `libc`：peer credentials；
+- `nix`：安全封装 Linux `SO_PEERCRED`、macOS `LOCAL_PEERPID` 与 `getpeereid`；生产 crate 不直接依赖或调用 `libc`；
 - OS 随机源：approval ID。
 
 生产依赖不包含 nono crate。

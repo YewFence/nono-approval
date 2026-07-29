@@ -120,6 +120,7 @@ TUI 持续等待 pending request，展示完整已知操作，用户按 `a` 或 
 ### Control 安全
 
 - runtime directory `0700`、socket `0600`，每条连接验证 peer UID；
+- peer credential 统一通过 `nix` 的安全封装读取，生产 crate 禁止 `unsafe`，不直接调用 `libc`；
 - 不使用 bearer token、随机 socket path、keyring 或 challenge-response；
 - 同 UID 防自批准由用户最终 nono profile 与启动方式负责；
 - 提供真实短生命周期 sandbox 的 `config validate`，但不作为强制启动门禁；

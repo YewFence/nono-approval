@@ -42,6 +42,8 @@ socket pathname 必须能完整放入目标平台的 `sockaddr_un.sun_path`；�
 - macOS：`LOCAL_PEERPID` 加 `getpeereid`；
 - 无法获取或验证时 fail closed，不能退化为只看文件权限。
 
+平台 adapter 使用 `nix` 的安全封装读取这些内核凭据。生产 crate 全局禁止 `unsafe`，不直接调用 `libc`；如果目标平台所需调用无法由当前 `nix` 安全接口覆盖，应停止该平台实现并重新评审依赖方案，不能在 adapter 中临时放宽这一约束。
+
 MVP 不使用 control bearer token、随机 socket 文件名、keyring 或挑战响应。
 
 ## 同 UID 自批准边界
