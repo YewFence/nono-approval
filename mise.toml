@@ -22,7 +22,7 @@ actionlint = "1"
 
 [vars]
 nllint_excludes = ""
-rust_binary_name = "rust-template"
+rust_binary_name = "nono-approval"
 # example: exclude file
 # nllint_excludes = "':(top,exclude)file'"
 

@@ -1,6 +1,6 @@
 # 安全模型
 
-本文是信任边界、control socket、Profile Validation、终端安全、明文数据生命周期、日志与 Debug Capture 的唯一事实来源。
+本文描述当前实现的信任模型、control socket、Profile Validation、终端安全、明文数据生命周期、日志与 Debug Capture。
 
 ## 信任边界
 
@@ -96,7 +96,7 @@ Validation 不安装 after hook，也不把 hook 纳入安全保证：after 时�
 - per-session 满返回 `429`，全局满返回 `503`；容量拒绝不驱逐已有请求，也不进入 Debug Capture；
 - 重复 `(session_id, request_id)` 拒绝；
 - completion 后保留短期 replay cache；
-- webhook caller 永远不能访问 control API；
+- webhook ingress 本身不授予 control 权限；同 UID 本地进程能否另行访问 control socket 仍取决于部署侧 sandbox；
 - 非 loopback bind 默认拒绝。
 
 ## 配置解析
@@ -118,9 +118,9 @@ Validation 不安装 after hook，也不把 hook 纳入安全保证：after 时�
 - 禁止改变终端标题、输出 hyperlink 或控制光标；
 - 使用确定性 quoting，仅供展示，绝不重新交给 shell 执行。
 
-详情超限时必须在 ingress 阶段拒绝整个请求，不能通过截断、折叠或省略后缀让用户基于不完整内容决定。列表摘要可以明确截断，因为它只用于导航；`show` 和 TUI 详情必须完整、自动换行并支持纵向滚动。
+详情超限时必须在 ingress 阶段拒绝整个请求，不能通过截断、折叠或省略后缀让用户基于不完整内容决定。列表摘要可以明确截断，因为它只用于导航；control detail 和 TUI 详情必须完整并支持纵向滚动，CLI `show` 按字段逐行输出且不做语义截断。
 
-用户输入的 denial reason 也是不可信边界输入：必须是非空 UTF-8，编码后最多 `4 KiB`，进入终端输出和 Debug Capture 时执行相同的安全转义规则。验证失败不能截断后继续提交。
+用户输入的 denial reason 也是不可信边界输入：必须是非空 UTF-8，不能全部由 NUL 字符组成，编码后最多 `4 KiB`；混合 NUL 的 reason 当前允许进入 Broker。reason 进入终端输出和 Debug Capture 时执行相同的安全转义规则，验证失败不能截断后继续提交。
 
 ## 明文展示边界
 
@@ -129,7 +129,7 @@ MVP 不自动脱敏 token、密码、签名 URL 或用户内容。审批人需�
 正常模式边界：
 
 - pending request 的完整已知字段可以通过 owner-only control 面明文返回；
-- 普通视图只展示操作与必要规则上下文，不塞入无助于决定的技术 metadata；
+- control detail JSON 包含 `source_kind`，CLI/TUI 主视图只渲染操作与必要规则上下文；
 - 明文始终经过终端安全转义；
 - raw JSON 和未知附加字段不进入普通或调试视图；
 - 请求详情不写入普通日志或磁盘；
@@ -148,7 +148,7 @@ capability
 network
 ```
 
-普通 UI 不展示通用可信度标签。值为 `proxy` 的 session ID 和值为 `0` 的 child PID 在普通视图中视为缺失；Debug Capture 保留 wire 原值。字段来源与缺失信息详见 [nono 0.69 调研](../research/nono-0.69.md)。
+普通 CLI/TUI 不渲染通用可信度标签；`--debug` 与 Debug Capture 保留已知 Wire DTO 的原值。字段来源与缺失信息详见 [nono 0.69 调研](../research/nono-0.69.md)。
 
 ## 普通日志
 

@@ -1,221 +1,138 @@
-# 实现与验证计划
+# 验证现状
 
-本文是实现阶段、自动化测试和真实 nono 验证的唯一事实来源。
+本文记录当前仓库已经自动化验证的行为、CI 平台和仍需手动验证的风险。它不是未来实现
+计划；功能语义以对应专题文档和代码为准。
 
-## 实现顺序
+## 本地入口
 
-### Phase 1：Webhook Bridge
+项目通过 mise 暴露可复用检查：
 
-1. 初始化独立 Cargo package，保留 `lib.rs`；
-2. 定义独立 wire DTO 与 webhook response；
-3. 实现 Broker、内存 pending store 与 oneshot；
-4. 实现固定 loopback webhook server；
-5. 通过进程内 interface 完成一次性 approve/deny；
-6. 验证 nono 能阻塞并在决定后继续或拒绝。
+```bash
+mise run test        # cargo test --workspace --all-targets --all-features --locked
+mise run rust:check  # fmt、cargo check、clippy -D warnings
+mise run repo:check  # lockfile、newline、typos、secret 和 workflow 检查
+mise run docs:build  # VitePress 构建
+mise run check       # repo:check、rust:check、test
+```
 
-完成标准：command approval 可登记，approve 成功继续，deny 与 timeout fail closed。
-
-### Phase 2：Control 与 TUI
-
-1. 创建 owner-only runtime directory 与 Unix socket；
-2. 实现 status/list/show/decision API；
-3. 实现对应 CLI；
-4. 增加 Linux/macOS peer UID 验证；
-5. 增加终端安全展示；
-6. 实现轮询式 `ratatui + crossterm` 审批界面。
-
-### Phase 3：安全与健壮性
-
-1. body、global pending、per-session 上限；
-2. duplicate/replay cache；
-3. best-effort disconnect cleanup；
-4. shutdown denial；
-5. 明文详情生命周期；
-6. Profile Validation 真实探针；
-7. Debug Capture；
-8. JSON 运行日志。
-
-### Phase 4：交付
-
-1. systemd user service 与 launchd agent 示例；
-2. shell completion；
-3. profile 配置指南；
-4. Pi、Claude Code、Codex 端到端验证；
-5. MIT License、crates.io metadata 与四目标 GitHub Release 构建；
-6. 为全部 `.tar.gz` 生成并验证 `SHA256SUMS`。
-
-## 单元测试
+## 当前单元测试
 
 ### Broker 与生命周期
 
-- 创建请求和唯一 approval ID；
-- approval ID 为 8 个随机字节编码的 16 位小写十六进制，碰撞时重生成；
-- approve、deny、timeout、cancel；
-- 重复 request ID；
-- 两个并发决定只有一个成功；
-- global `64` / per-session `8` capacity 边界；
-- per-session 满返回 `429`，全局满返回 `503`；
-- 容量拒绝不生成 approval ID、Tombstone 或 Debug Capture 记录；
-- replay cache；
-- terminal state 后销毁 request detail；
-- Tombstone 不包含请求详情并遵守 1024/10 分钟上限；
-- 轮询不延长 Approval Lease；
-- 默认 Approval Lease 为 `270s`，并独立于 nono 示例中的 `300s` timeout；
-- shutdown 结束全部 pending。
+`src/broker.rs` 当前覆盖：
 
-### Protocol
+- 完整 approval ID 形状，拒绝缺少前缀、短 ID 和大写 hex；
+- denial reason 的空值、全 NUL、`4 KiB` 边界和超限；
+- approve 只生效一次，完成后 `show` 返回最小 Tombstone；
+- 单调 deadline 到期返回 denial；
+- duplicate、per-session 和 global capacity。
 
-- command、endpoint、capability、network fixture；
-- 已知 variant 的未知附加字段；
-- unknown variant；
-- 缺少公共字段；
-- trailing JSON；
-- body 恰好位于 `256 KiB` 边界；
-- oversized body 在解析前返回 `413`，不进入 pending、日志或 Debug Capture；
-- invalid UTF-8/JSON；
-- granted/denied response shape。
+### Wire Adapter 与 webhook
 
-### CLI ID
+`src/protocol.rs` 和 `src/webhook.rs` 当前覆盖：
 
-- 带 `appr_` 的完整 ID 精确匹配；
-- 缺少前缀拒绝；
-- 非 16 位 hex、含大写或其他编码形式拒绝；
-- 唯一但不完整的前缀仍拒绝；
-- 未知和已结束 ID 不回退到其他请求。
+- command 的附加未知字段兼容；
+- 未知或 incomplete variant；
+- trailing JSON 和 body limit；
+- endpoint、capability、network fixture；
+- 非法 access/protocol 和空操作字段；
+- 固定 webhook path。
 
-### Config
+四种 fixture 固定的是本项目当前 DTO 行为，测试依赖图没有引入 nono crate。
 
-- `setup` 原子创建权限 `0600` 的 `config.toml` 与 `schema_version = 1`；
-- `setup` 对有效既有配置幂等；
-- 缺少版本、未来版本、未知字段、字段拼错和非法 TOML 都返回非零；
-- 无效既有配置不会被 `setup` 覆盖或被 `serve` 自动修复；
-- `serve` 只读取配置，不迁移或改写文件；
-- 非秘密参数遵循 `CLI > config.toml > 内置默认值`；
-- CLI 覆盖仍执行与配置值相同的范围和安全验证；
-- 固定 webhook path 不进入配置，也没有覆盖入口。
+### 配置与 runtime path
 
-### Display
+`src/config.rs` 当前覆盖：
 
-- ANSI、OSC hyperlink、terminal title sequence；
-- embedded newline、C0/C1 control characters；
-- `list` summary 按列宽使用明确省略标记截断；
-- `show` 与 TUI 长参数自动换行且不截断；
-- 安全转义后详情恰好 `1 MiB` 可进入 pending，超限返回 `422` 且不进入日志或 Debug Capture；
-- token/password/query 等值仍保留可判断的明文内容；
-- quoting 不可执行化。
+- `setup` 创建 `0600` 文件且幂等；
+- 未知字段和不安全文件权限失败。
 
-### Interactive UI
+`src/runtime_path.rs` 当前覆盖：
 
-- 无需复制 ID 即可选择并决定；
-- 空队列等待与新请求出现；
-- daemon 尚未启动时显示等待并每 `1s` 重连，`q` 可退出；
-- daemon 出现后无需重启 TUI 即切换到 `500ms` 正常轮询；
-- 等待 TUI 不隐式执行 setup 或启动 daemon；
-- 已连接 daemon 断开时立即清除旧 snapshot、选择、详情、滚动和 reason 草稿；
-- 运行中断线后显示 disconnected 并每 `1s` 重连，新 daemon 状态从空客户端模型重新加载；
-- 旧请求在断线期间不可操作，即使新 daemon 返回相同 ID 也不复用旧状态；
-- `500ms` 轮询与本地倒计时；
-- queue 按 `received_at` FIFO 稳定排序，相同时间以 approval ID 打破平局；
-- 新请求追加且不抢占当前选择或重置滚动；
-- 当前项消失后优先选原位置下一项，没有时回退上一项；
-- 双栏和单栏布局稳定；
-- 双栏和单栏详情按内容宽度自动换行，不提供横向滚动；
-- resize 后重新换行并尽可能保持逻辑阅读位置；
-- resize 按 approval ID 保留选择；
-- 键位语义固定，普通浏览态 Enter 不决定，任何状态下 Enter 都不能批准；
-- `d` 以固定 reason 立即拒绝，`D` 进入理由输入态；
-- 理由输入态 Enter 提交 denial，Esc 取消并丢弃输入；
-- 空理由不提交，UTF-8 编码后恰好 `4 KiB` 可提交，超限明确失败且不截断；
-- TUI、CLI `--reason` 与 control API 使用相同 reason 验证；
-- 编辑理由期间目标 ID 固定，请求结束后提交不得作用到其他项目；
-- 详情滚动不改变选择；
-- 并发新增、完成、过期不会把决定落到错误请求；
-- 超长内容与小终端不重叠；
-- 正常、错误、panic 与 signal 路径恢复终端状态。
+- owner-only 目录创建和 `0700` 权限；
+- symlink path component 拒绝；
+- 既有 permissive 目录在只读验证时拒绝。
+
+### 展示与 TUI
+
+`src/display.rs` 当前覆盖 ANSI/OSC 清理、C0 可见转义和 Unicode-width summary 截断。
+
+`src/interactive.rs` 当前覆盖：
+
+- disconnect 清空客户端 request state；
+- 宽屏/窄屏基本渲染；
+- denial reason 输入态不会把 Enter 解释成 approve。
 
 ### Debug Capture
 
-- 托管 state directory 的 owner、权限和 symlink 验证；
-- 每次启用的 daemon 启动创建独立 `0600` 捕获文件；
-- `schema_version` NDJSON 逐行追加；
-- `request_received` 与 `request_completed` 字段；
-- completion 不重复完整 Wire DTO；
-- 不记录 control 轮询和 UI 行为；
-- 普通日志不混入明文详情；
-- 读取方可忽略末尾不完整行；
-- `debug captures` 只列 metadata，不打印捕获内容；
-- `debug clean` 删除全部合法托管文件且不二次确认；
-- `debug clean` 拒绝 symlink、子目录、异常 owner 和非托管文件名，不递归删除目录；
-- 启动时无法安全创建捕获文件则 daemon 启动失败；
-- 运行中首次追加失败会关闭捕获、只记录一次错误并继续审批；
-- 捕获失败后 `status` 和 TUI 持续显示 failed，且不重试或切换文件。
+`src/debug_capture.rs` 当前覆盖：
 
-## 集成测试
+- 创建、列出和清理托管 capture；
+- 非托管目录条目拒绝；
+- received/completed NDJSON 及 completion reason 安全清理；
+- `response_delivery_outcome: not_observed` 序列化。
 
-启动真实 daemon：
+### CLI
 
-1. webhook handler 在没有决定时保持连接；
-2. approve API 返回 granted；
-3. deny API 返回 reason；
-4. daemon deadline 自动拒绝；
-5. 可观察断开会 best-effort 清理；
-6. 即使连接未断开，deadline 后也不能批准；
-7. shutdown 结束全部 pending；
-8. control socket 权限正确；
-9. 不同 UID control client 被拒绝；
-10. 非 loopback bind 默认拒绝；
-11. 固定 endpoint 接受合法本地请求，其他 path 返回 `404`；
-12. stale socket 只在安全条件下清理；
-13. Debug Capture 创建失败阻止启动，运行时写失败只关闭捕获而不影响审批。
+`src/cli.rs` 当前覆盖 partial approval ID 在 clap 解析阶段失败，以及所有公开子命令都有
+help 描述。
 
-平台 CI 至少覆盖 Linux 与 macOS 的编译、runtime path 权限检查、peer identity socket-pair 测试和 TUI 渲染核心状态测试。平台 API 失败时 control connection 必须 fail closed。
+## 当前集成测试
 
-平台目录测试使用固定版本的 `directories::ProjectDirs`，验证 Linux/macOS 的 config、state/cache 与 runtime 用途映射、owner-only 项目目录创建，以及 control socket pathname 超过平台限制时明确启动失败且不回退到共享临时目录。
+`tests/bridge.rs` 启动真实 TCP webhook listener 和 Unix control listener，覆盖：
 
-## Profile Validation 测试
+1. webhook request 登记为 pending；
+2. control list 找到精确 approval ID；
+3. control approve 返回 granted；
+4. 原 webhook response 收到 granted；
+5. terminal state 后第二次决定返回 conflict；
+6. 超过 `8 KiB` 的 control decision body 返回 `400` 且不决定请求。
 
-- daemon 未运行返回非零；
-- nono/profile/sandbox 初始化失败返回非零；
-- 探针未报告 started 返回非零；
-- `EACCES/EPERM` 才通过；
-- ENOENT、ECONNREFUSED、timeout 等都不误报安全；
-- control HTTP 可达判为不安全；
-- 探针不创建或决定 Approval Request；
-- 文档和 stderr 明确提示 session hook 副作用。
+该集成测试使用临时 socket path 和进程内 Broker，不启动完整 CLI 进程，也不运行 nono。
 
-## nono 端到端测试
+## CI
 
-准备临时 profile，把 command policy 指向测试 daemon。验证：
+GitHub Actions 当前执行：
 
-1. 普通命令行下 nono 发出 webhook；
-2. TUI/CLI 能看到完整操作；
-3. approve 后原命令成功；
-4. deny 后原命令明确失败；
-5. daemon 默认 `270s` Lease 比 nono 默认 `300s` timeout 更早结束；
-6. Pi TUI 中审批在另一个终端完成，不争用 Pi 的 tty；
-7. endpoint/capability fixture 与当前 nono schema 兼容。
+- Linux 与 macOS 的 `mise run rust:check`；
+- Linux 与 macOS 的 `mise run test`；
+- Linux repository checks；
+- VitePress 文档构建；
+- 定期 Rust dependency audit；
+- release 时四目标构建、归档、crates.io publish 和 GitHub Release。
 
-## MVP 验收
+可移植检查与打包行为由 `mise.toml`、`mise.ci.toml` 和 `scripts/package-release` 维护；
+workflow 负责事件、权限、平台 matrix、artifact 和发布编排。
 
-- 使用当前 nono webhook backend，无需修改 nono；
-- request 可登记为 pending 且只能决定一次；
-- 不带子命令运行时进入交互 TUI；
-- 空队列等待，新请求自动显示；
-- TUI 与精确 CLI 都不二次确认；
-- Enter 永不批准；
-- list/show 仍支持脚本化查询；
-- deadline、shutdown 和错误路径 fail closed；
-- body 默认上限为 `256 KiB`，pending 默认全局 `64`、每 session `8`；
-- control socket owner-only 且验证 peer UID；
-- Profile Validation 只有真实 `EACCES/EPERM` 才通过；
-- webhook 只监听 loopback；
-- 明文详情经过终端安全转义；
-- 正常模式不落盘、不写日志，terminal state 后销毁详情；
-- Debug Capture 只显式写入托管 owner-only NDJSON，不自动轮换或过期；
-- `debug clean` 可安全删除全部合法托管捕获文件；
-- 提供 systemd/launchd 示例但不自动配置；
-- MIT、crates.io 与 GitHub Releases 交付材料完备；
-- GitHub Release 覆盖 Linux/macOS 的 x86_64/aarch64 GNU/Darwin 四目标；
-- 每个归档包含二进制、LICENSE、README 和平台适用的服务示例，`SHA256SUMS` 校验通过；
-- MVP 发布流水线不包含 musl、deb/rpm、Homebrew tap 或安装脚本；
-- Linux/macOS 自动化和真实 nono E2E 通过。
+## 尚未自动化验证
+
+以下行为在代码或文档中存在，但当前测试集没有提供端到端证据：
+
+- 真实 nono `0.69` 从 command policy 发出 webhook，并在 approve/deny 后继续或拒绝操作；
+- Pi、Claude Code、Codex 全屏 TUI 中跨终端审批不争用原 TTY；
+- `config validate` 对真实 Linux Landlock 和 macOS Seatbelt profile 的可达/拒绝矩阵；
+- Profile Validation 的 timeout、invalid child protocol、session hook 提示和各 errno 分支；
+- Linux/macOS peer identity 的不同 UID socket-pair 行为和平台 API 失败路径；
+- 完整 daemon 收到 `SIGINT`/`SIGTERM` 后的 denial、100ms flush 和 socket 清理；
+- webhook 的 method、content-type、所有错误状态码和 disconnect cancellation 的网络级测试；
+- Tombstone 1024 条/10 分钟淘汰、replay TTL 和并发双决定的竞争测试；
+- Debug Capture 运行时 I/O 失败转为 failed 且审批继续；
+- 每个 ProjectDirs 平台实际路径和 socket ABI 长度边界；
+- TUI 的全部键位、500ms/1s 节奏、selection fallback、resize、panic/异常终端恢复；
+- 四个 release archive 的内容在 CI 中解包验证。
+
+这些条目不能在发布说明或用户文档中表述成已经通过的验收项。补充测试时应直接验证
+模块公开 interface，避免为测试另建一套旁路实现。
+
+## 手动验证建议
+
+涉及真实 nono 或平台 sandbox 时，至少记录：
+
+1. nono 精确版本和 profile；
+2. 操作系统与架构；
+3. daemon 配置和实际 webhook/control 地址；
+4. approval ID、终态和原操作结果；
+5. 是否启用 Debug Capture；
+6. Profile Validation 是否确认 started，及最终 errno/可达结果。
+
+调研事实与手动实验应写入版本化 research 文档，不要混入长期协议承诺。

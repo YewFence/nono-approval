@@ -1,0 +1,12 @@
+[Unit]
+Description=nono local approval daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/nono-approval serve
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
