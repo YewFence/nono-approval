@@ -230,9 +230,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform: windows-x86_64
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always

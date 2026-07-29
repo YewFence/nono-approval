@@ -36,8 +36,14 @@ jobs:
         run: mise run repo:check
 
   rust:
-    name: Rust Checks
-    runs-on: ubuntu-latest
+    name: Rust Checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
@@ -63,8 +69,14 @@ jobs:
         run: mise run rust:check
 
   test:
-    name: Tests
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
