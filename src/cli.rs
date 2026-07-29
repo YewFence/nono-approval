@@ -225,7 +225,10 @@ async fn status(args: ClientArgs) -> Result<(), Box<dyn Error>> {
     match status.debug_capture {
         DebugCaptureStatus::Disabled => println!("Debug capture: disabled"),
         DebugCaptureStatus::Enabled { path } => {
-            println!("Debug capture: enabled ({})", path.display());
+            println!(
+                "Debug capture: enabled ({})",
+                crate::display::sanitize(&path.display().to_string())
+            );
         }
         DebugCaptureStatus::Failed { error_category } => {
             println!("Debug capture: failed ({error_category})");
@@ -312,7 +315,10 @@ fn setup_command() -> Result<(), Box<dyn Error>> {
     let config = setup(&paths.config_file)?;
     let resolved = config.resolve()?;
     let endpoint = format!("http://{}{}", resolved.webhook_listen, WEBHOOK_PATH);
-    println!("Configuration: {}", paths.config_file.display());
+    println!(
+        "Configuration: {}",
+        crate::display::sanitize(&paths.config_file.display().to_string())
+    );
     println!("Webhook endpoint: {endpoint}");
     println!();
     println!("nono profile fragment:");

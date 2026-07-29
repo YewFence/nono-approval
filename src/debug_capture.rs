@@ -185,7 +185,7 @@ impl DebugCapture {
             let category = format!("io:{:?}", error.kind());
             state.file = None;
             state.failure = Some(category.clone());
-            eprintln!("debug capture failed and has been disabled: {category}");
+            tracing::error!(error_category = %category, "debug capture failed and has been disabled");
         }
     }
 }

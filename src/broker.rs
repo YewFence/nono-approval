@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::time::Instant;
 
 use crate::debug_capture::DebugCapture;
-use crate::display::{ApprovalDetailContent, sanitize};
+use crate::display::{ApprovalDetailContent, sanitize, truncate_summary};
 use crate::protocol::{
     IncomingApproval, KnownApprovalRequest, SourceKind, WIRE_ADAPTER_VERSION, WebhookDecision,
 };
@@ -367,6 +367,8 @@ impl Broker {
             request,
             detail,
         } = incoming;
+        let capability_type = request.capability_type().to_owned();
+        let session_log = short_session_id(&replay_key.0);
         let (decision_tx, receiver) = oneshot::channel();
         state.pending.insert(
             approval_id.clone(),
@@ -375,7 +377,7 @@ impl Broker {
                 claimed_backend,
                 session_id: replay_key.0,
                 request_id: replay_key.1,
-                capability_type: request.capability_type().to_owned(),
+                capability_type: capability_type.clone(),
                 wire_request: request,
                 raw_request,
                 detail,
@@ -384,6 +386,12 @@ impl Broker {
                 deadline,
                 decision_tx: Some(decision_tx),
             },
+        );
+        tracing::info!(
+            approval_id = %approval_id,
+            capability_type = %capability_type,
+            session = %session_log,
+            "approval received"
         );
         Ok(Submission {
             approval_id,
@@ -600,6 +608,7 @@ impl Broker {
         tracing::info!(
             approval_id = %pending.approval_id,
             capability_type = %pending.capability_type,
+            session = %short_session_id(&pending.session_id),
             state = ?terminal_state,
             wait_ms = wait_duration.as_millis(),
             "approval completed"
@@ -674,6 +683,10 @@ fn timestamp(time: SystemTime) -> String {
         |_| "1970-01-01T00:00:00Z".to_owned(),
         |value| value.to_string(),
     )
+}
+
+fn short_session_id(session_id: &str) -> String {
+    truncate_summary(&sanitize(session_id), 12)
 }
 
 #[must_use]

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use jiff::Timestamp;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -13,7 +14,9 @@ use thiserror::Error;
 use crate::broker::{
     ApprovalDetail, ApprovalId, ApprovalSummary, DEFAULT_DENIAL_REASON, validate_denial_reason,
 };
-use crate::control::{ApprovalView, ControlClient, DebugCaptureStatus, DecisionRequest};
+use crate::control::{
+    ApprovalView, ControlClient, ControlClientError, DebugCaptureStatus, DecisionRequest,
+};
 use crate::display::{sanitize, truncate_summary};
 
 const CONNECTED_POLL: Duration = Duration::from_millis(500);
@@ -56,7 +59,7 @@ impl App {
             detail_scroll: 0,
             show_detail_panel: false,
             reason: None,
-            status: "Waiting for daemon…".to_owned(),
+            status: "Disconnected — waiting for daemon…".to_owned(),
             debug_capture: DebugCaptureStatus::Disabled,
             next_poll: Instant::now(),
         }
@@ -75,7 +78,7 @@ impl App {
         self.detail = None;
         self.detail_scroll = 0;
         self.reason = None;
-        "Waiting for daemon…".clone_into(&mut self.status);
+        "Disconnected — waiting for daemon…".clone_into(&mut self.status);
         self.next_poll = Instant::now() + DISCONNECTED_POLL;
     }
 
@@ -98,10 +101,15 @@ impl App {
         } else {
             Some(0)
         };
-        if let Ok(status) = self.client.status().await {
-            self.debug_capture = status.debug_capture;
+        let Ok(status) = self.client.status().await else {
+            self.disconnect();
+            return;
+        };
+        self.debug_capture = status.debug_capture;
+        if self.refresh_detail().await.is_err() {
+            self.disconnect();
+            return;
         }
-        self.refresh_detail().await;
         self.status = if self.approvals.is_empty() {
             "Waiting for approval requests…".to_owned()
         } else {
@@ -110,15 +118,21 @@ impl App {
         self.next_poll = Instant::now() + CONNECTED_POLL;
     }
 
-    async fn refresh_detail(&mut self) {
+    async fn refresh_detail(&mut self) -> Result<(), ControlClientError> {
         let Some(approval_id) = self.selected_id() else {
             self.detail = None;
-            return;
+            return Ok(());
         };
         self.detail = match self.client.show(&approval_id, false).await {
             Ok(ApprovalView::Pending(detail)) => Some(*detail),
-            Ok(ApprovalView::Completed(_)) | Err(_) => None,
+            Ok(ApprovalView::Completed(_))
+            | Err(ControlClientError::Response {
+                status: hyper::StatusCode::NOT_FOUND,
+                ..
+            }) => None,
+            Err(error) => return Err(error),
         };
+        Ok(())
     }
 
     async fn decide(&mut self, approval_id: ApprovalId, decision: DecisionRequest) {
@@ -152,7 +166,10 @@ pub async fn run(socket_path: &Path) -> Result<(), InteractiveError> {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|panic| {
         ratatui::restore();
-        eprintln!("nono-approval TUI panicked: {panic}");
+        eprintln!(
+            "nono-approval TUI panicked: {}",
+            sanitize(&panic.to_string())
+        );
     }));
     let mut terminal = ratatui::try_init()?;
     let result = run_loop(&mut terminal, socket_path).await;
@@ -302,7 +319,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = if app.connected {
         " Pending approvals "
     } else {
-        " Waiting for daemon… "
+        " Disconnected — waiting for daemon… "
     };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -329,6 +346,10 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ]));
             }
             lines.push(Line::from(format!("Deadline: {}", detail.deadline)));
+            lines.push(Line::from(format!(
+                "Lease remaining: {}",
+                lease_remaining(&detail.deadline)
+            )));
             Text::from(lines)
         },
     );
@@ -351,7 +372,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 DebugCaptureStatus::Enabled { .. } => " · debug capture: enabled",
                 DebugCaptureStatus::Disabled => "",
             };
-            format!("{}{}", app.status, capture)
+            format!("{}{}", sanitize(&app.status), capture)
         },
         |reason| {
             reason.error.as_ref().map_or_else(
@@ -361,6 +382,14 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         },
     );
     frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), area);
+}
+
+fn lease_remaining(deadline: &str) -> String {
+    let Ok(deadline) = deadline.parse::<Timestamp>() else {
+        return "unknown".to_owned();
+    };
+    let seconds = deadline.duration_since(Timestamp::now()).as_secs().max(0);
+    format!("{}m {:02}s", seconds / 60, seconds % 60)
 }
 
 #[cfg(test)]

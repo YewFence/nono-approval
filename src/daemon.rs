@@ -90,11 +90,17 @@ pub async fn run(config: DaemonConfig) -> Result<(), DaemonError> {
         "  webhook: http://{}{}",
         config.webhook_listen, WEBHOOK_PATH
     );
-    println!("  control: {}", config.control_socket.display());
+    println!(
+        "  control: {}",
+        crate::display::sanitize(&config.control_socket.display().to_string())
+    );
     if let Some(capture) = &config.debug_capture
         && let crate::debug_capture::DebugCaptureStatus::Enabled { path } = capture.status()
     {
-        println!("  debug capture: {}", path.display());
+        println!(
+            "  debug capture: {}",
+            crate::display::sanitize(&path.display().to_string())
+        );
     }
 
     let mut webhook_task = tokio::spawn(crate::webhook::serve(
