@@ -1,11 +1,16 @@
 [package]
-name = "rust-template"
+name = "nono-approval"
 version = "0.1.0"
-description = "An opinionated Rust project template."
+description = "A local approval daemon for nono webhook requests."
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
-publish = false
+repository = "https://github.com/YewFence/nono-approval"
+homepage = "https://github.com/YewFence/nono-approval"
+documentation = "https://docs.rs/nono-approval"
+readme = "README.md"
+keywords = ["nono", "approval", "sandbox", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lints.rust]
 unsafe_code = "forbid"
