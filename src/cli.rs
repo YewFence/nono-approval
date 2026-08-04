@@ -26,22 +26,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create the local configuration and print the nono profile fragment.
     Setup,
+    /// Validate the local approval configuration.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Run the local approval daemon.
     Serve(ServeArgs),
+    /// Show the running daemon's status.
     Status(ClientArgs),
+    /// List pending approval requests.
     List(ListArgs),
+    /// Show one approval request by its full ID.
     Show(ShowArgs),
+    /// Approve one pending request by its full ID.
     Approve(DecisionArgs),
+    /// Deny one pending request by its full ID.
     Deny(DenyArgs),
+    /// Inspect or remove explicit debug captures.
     Debug {
         #[command(subcommand)]
         command: DebugCommand,
     },
+    /// Generate shell completion scripts.
     Completions {
+        /// Shell to generate completions for.
         shell: Shell,
     },
     #[command(name = "__probe-control-socket", hide = true)]
@@ -50,7 +61,9 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
+    /// Probe whether a nono profile blocks the control socket.
     Validate {
+        /// nono profile name or path.
         #[arg(long)]
         profile: String,
         #[command(flatten)]
@@ -60,7 +73,9 @@ enum ConfigCommand {
 
 #[derive(Clone, Copy, Debug, Subcommand)]
 enum DebugCommand {
+    /// List managed debug capture files.
     Captures,
+    /// Delete managed debug capture files.
     Clean,
 }
 
@@ -74,13 +89,16 @@ struct ClientArgs {
 struct ListArgs {
     #[command(flatten)]
     client: ClientArgs,
+    /// Print pending approvals as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct ShowArgs {
+    /// Full approval ID, such as `appr_0123456789abcdef`.
     approval_id: ApprovalId,
+    /// Include wire-level debug metadata.
     #[arg(long)]
     debug: bool,
     #[command(flatten)]
@@ -89,6 +107,7 @@ struct ShowArgs {
 
 #[derive(Debug, Args)]
 struct DecisionArgs {
+    /// Full approval ID, such as `appr_0123456789abcdef`.
     approval_id: ApprovalId,
     #[command(flatten)]
     client: ClientArgs,
@@ -96,7 +115,9 @@ struct DecisionArgs {
 
 #[derive(Debug, Args)]
 struct DenyArgs {
+    /// Full approval ID, such as `appr_0123456789abcdef`.
     approval_id: ApprovalId,
+    /// Reason returned with the denial.
     #[arg(long)]
     reason: Option<String>,
     #[command(flatten)]
@@ -105,26 +126,35 @@ struct DenyArgs {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LogFormat {
+    /// Human-readable log lines.
     Text,
+    /// Structured JSON log records.
     Json,
 }
 
 #[derive(Debug, Args)]
 struct ServeArgs {
+    /// Webhook listener address.
     #[arg(long)]
     webhook_listen: Option<SocketAddr>,
     #[arg(long)]
     control_socket: Option<PathBuf>,
+    /// Approval lease duration.
     #[arg(long, value_parser = parse_duration)]
     request_timeout: Option<Duration>,
+    /// Maximum number of pending requests.
     #[arg(long)]
     max_pending: Option<usize>,
+    /// Maximum pending requests from one session.
     #[arg(long)]
     max_per_session: Option<usize>,
+    /// Maximum webhook request body size.
     #[arg(long, value_parser = parse_byte_size)]
     max_body: Option<usize>,
+    /// Persist explicit debug capture events for this daemon run.
     #[arg(long)]
     debug_capture: bool,
+    /// Log output format.
     #[arg(long, value_enum, default_value_t = LogFormat::Text)]
     log_format: LogFormat,
 }
@@ -410,12 +440,39 @@ fn init_logging(format: LogFormat) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
 
     use super::Cli;
 
     #[test]
     fn rejects_partial_approval_id_at_parse_time() {
         assert!(Cli::try_parse_from(["nono-approval", "approve", "appr_1234"]).is_err());
+    }
+
+    #[test]
+    fn public_subcommands_have_help_descriptions() {
+        let command = Cli::command();
+        for name in [
+            "setup",
+            "config",
+            "serve",
+            "status",
+            "list",
+            "show",
+            "approve",
+            "deny",
+            "debug",
+            "completions",
+        ] {
+            let subcommand = command
+                .get_subcommands()
+                .find(|subcommand| subcommand.get_name() == name)
+                .unwrap_or_else(|| panic!("missing subcommand {name}"));
+            let description = subcommand.get_about().map(ToString::to_string);
+            assert!(
+                description.is_some_and(|description| !description.is_empty()),
+                "missing help description for {name}"
+            );
+        }
     }
 }

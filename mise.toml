@@ -59,6 +59,26 @@ run = "cargo fmt --all"
 description = "Run Clippy with warnings denied"
 run = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
 
+[tasks.cli]
+description = "Run the CLI from local source"
+usage = '''
+arg "[args]" var=#true help="Arguments passed to nono-approval"
+'''
+run = 'cargo run --locked -- "$@"'
+
+[tasks."cli:install"]
+description = "Install the CLI from local source with Cargo"
+run = "cargo install --locked --force --path ."
+
+[tasks."cli:mise:install"]
+description = "Link the local CLI build into the global mise configuration"
+depends = ["build"]
+run = '''
+mise tool-alias set nono-approval github:YewFence/nono-approval
+mise link --force nono-approval@dev target/release
+mise use --global nono-approval@dev
+'''
+
 [tasks.build]
 description = "Build an optimized Rust binary"
 run = "cargo build --workspace --all-features --release --locked"
