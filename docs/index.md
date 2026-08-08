@@ -9,6 +9,9 @@ hero:
     - theme: brand
       text: Get Started
       link: /guide/getting-started
+    - theme: alt
+      text: Architecture
+      link: /design/overview
 
 features:
   - title: 独立终端审批
@@ -18,3 +21,11 @@ features:
   - title: CLI 与 TUI
     details: 默认进入轮询式 TUI，同时提供 status、list、show、approve 和 deny 命令。
 ---
+
+## 当前实现
+
+`nono-approval` 当前实现了 webhook bridge、内存 Broker、Unix-socket control
+interface、精确 CLI、轮询式 TUI、Profile Validation probe 和显式 Debug Capture。
+
+从[架构总览](/design/overview)开始，再按专题阅读[协议与适配](/design/protocol)、
+[审批生命周期](/design/approval-lifecycle)和[安全模型](/design/security)。

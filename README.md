@@ -116,7 +116,7 @@ mise run test
 mise run check
 ```
 
-架构、安全边界、协议和完整验收约束见 `design.md` 与 `docs/design/`。
+架构、安全边界、协议和验证现状见 [`docs/design/overview.md`](docs/design/overview.md)。
 
 ## License
 

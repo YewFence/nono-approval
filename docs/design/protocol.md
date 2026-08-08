@@ -1,26 +1,12 @@
-# 协议与适配边界
+# 协议与适配
 
-本文是 nono-approval 协议设计的唯一事实来源，覆盖 nono webhook Wire Adapter、loopback ingress 和 owner-only control API。nono `0.69.0` 的来源调查与字段可信度见 [nono 0.69 调研](../research/nono-0.69.md)。
+本文是当前 Wire Adapter、webhook ingress 和 Unix-socket control interface 的事实来源。
+它描述代码实际解析和返回的 JSON；nono `0.69` 的外部事实见[调研记录](../research/nono-0.69.md)。
 
 ## Wire Adapter
 
-发布二进制不依赖 `nono` crate，而是在项目内定义覆盖当前 webhook schema 的最小 wire DTO：
-
-```text
-raw request JSON
-    ├── parse common metadata: request_id/session_id/capability_type
-    └── strictly parse known local wire variant
-```
-
-设计约束：
-
-- 外层 request 同时保留为 `RawValue`，仅用于兼容性诊断和未知字段保留；
-- 已知 variant 允许未知附加字段，避免 nono 新增兼容字段时直接失败；
-- 未知 `capability_type` 或已知 variant 缺少安全展示所需字段时 fail closed；
-- raw JSON 不能绕过 wire validation 成为审批通道；
-- 生产依赖图不引入 nono；兼容性测试可以引用目标版本的 `nono::supervisor::ApprovalRequest` 生成 fixture。
-
-支持的已知 variant：
+生产二进制不依赖 `nono` crate。项目内的 `KnownApprovalRequest` 覆盖当前实现支持的四种
+variant：
 
 ```text
 command
@@ -29,19 +15,7 @@ capability
 network
 ```
 
-返回 nono 时生成当前兼容的简单响应，不依赖 nono Rust enum 的派生序列化形状。
-
-## Webhook Envelope
-
-nono 发出：
-
-```http
-POST /v1/webhooks/approval HTTP/1.1
-Content-Type: application/json
-User-Agent: nono-cli/0.69.0
-```
-
-外层结构：
+外层 envelope 为：
 
 ```json
 {
@@ -60,115 +34,151 @@ User-Agent: nono-cli/0.69.0
 }
 ```
 
-第一层严格要求：
+`backend` 必须是非空字符串，`request` 必须能反序列化为已知 variant。已知 variant
+允许额外字段，额外字段不会进入 `KnownApprovalRequest`、普通展示或 debug response；
+外层 unknown field 也不影响解析。`raw_request` 只在 Broker pending 期间的内存中保留；
+Debug Capture 记录已知 Wire DTO，不记录 raw JSON。raw request 不能绕过已知 DTO 验证
+成为审批通道。
 
-- `backend` 是非空字符串；
-- `request` 是 JSON object；
-- 请求体没有 trailing JSON；
-- 请求体大小不超过默认 `256 KiB` 的配置上限。
-
-公共 metadata 至少包含：
+公共身份字段为：
 
 ```rust
-struct RequestMetadata {
-    capability_type: String,
-    request_id: String,
-    session_id: String,
-}
+request_id: String
+session_id: String
 ```
 
-公共字段缺失、未知 variant、已知 variant 解析失败或 body 不合法时返回 `400`，请求不进入 pending。读取过程中一旦确认 body 超过 `256 KiB` 上限，立即停止读取并返回 `413 Payload Too Large`，不得继续解析。
+二者不能为空。其余必填字段按 variant 验证：
 
-已知 Wire DTO 完成终端安全转义并构造完整决策详情后，总 UTF-8 大小不得超过 `1 MiB`。超限请求返回 `422 Unprocessable Content`，不进入 pending、replay index、普通日志或 Debug Capture；不能截断详情后让用户审批。control API 的单个详情 JSON response 同样不得超过 `1 MiB`。
+| variant | 必填字段 | 普通展示字段 |
+| --- | --- | --- |
+| `command` | `command`、`caller`、`intercept_rule` | Command、Requested by、Caller、Rule、Reason |
+| `endpoint` | `route_id`、`upstream`、`method`、`path`、`rule_label` | Endpoint、Route、Upstream、Rule、Reason |
+| `capability` | `path` | Path、Access、Reason |
+| `network` | `host` | Destination、Protocol、Resolved IPs、Reason |
 
-## Webhook Response
+`access` 只能是 `Read`、`Write` 或 `ReadWrite`；`protocol` 只能是 `tcp` 或 `udp`。
+`child_pid`、`session_id`、`request_id` 等 wire 字段会保留在内部 DTO，但普通展示只
+使用上表字段。
 
-批准：
+## Webhook 请求
+
+监听地址默认 `127.0.0.1:17443`，地址可由 config 或 `serve --webhook-listen` 覆盖，但
+必须是 loopback IP。path 固定为：
+
+```text
+POST /v1/webhooks/approval
+Content-Type: application/json
+```
+
+实现只接受精确的 `application/json` content type，不接受缺失、其他 media type 或带
+参数的变体。方法错误返回 `405`，path 错误返回 `404`。
+
+读取 body 时使用配置的 hard limit，默认 `256 KiB`；超过限制会停止读取并返回：
 
 ```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"decision":"granted"}
+413 Payload Too Large
+{"error":"request body is too large"}
 ```
 
-拒绝：
+body transport error、非法 JSON、空 backend、未知/incomplete variant 或空必填字段返回：
 
 ```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"decision":"denied","reason":"user denied request"}
+400 Bad Request
+{"error":"invalid webhook request"}
 ```
 
-daemon 的 Approval Lease 到期时同样返回 denied，而不是让 handler 无限悬挂。请求体错误、鉴权路径错误、容量超限等 ingress 错误使用非 `2xx`；nono 会 fail closed。超限 body 不进入普通日志、Debug Capture、replay index 或 pending store，只允许记录状态码、已读字节数上限和错误类别。
+Wire Adapter 构造安全展示详情后，详情 JSON 大小默认不得超过 `1 MiB`；超限返回：
 
-## Webhook Listener
-
-默认监听固定 loopback 地址：
-
-```text
-127.0.0.1:17443
+```http
+422 Unprocessable Entity
+{"error":"approval detail is too large"}
 ```
 
-端口被占用时启动失败，不能静默换成动态端口，因为 nono profile 中的 webhook URL 是静态配置。用户可以显式覆盖端口，但必须同步修改 profile。
-
-默认拒绝：
-
-```text
-0.0.0.0
-[::]
-任何非 loopback IP
-```
-
-webhook 使用固定 path：
-
-```text
-/v1/webhooks/approval
-```
-
-其他 path 返回 `404`。固定 endpoint 不认证 caller：任意能访问 loopback 端口的本地进程都可以提交形状合法的伪造请求或消耗 pending 容量。daemon 不执行请求中的操作，decision 只返回给提交该精确 webhook 的连接，因此伪造请求不能批准或执行另一条真实 nono 操作；风险限于用户诱导、界面骚扰和 fail-closed 拒绝服务。
+上述 ingress 失败都不会进入 Broker pending、replay cache 或 Debug Capture。
 
 ## Webhook 处理流程
 
 ```text
 validate method/path/content-type
     -> read body with hard limit
-    -> parse envelope and common metadata
-    -> parse known variant
+    -> parse envelope and known variant
+    -> validate identity and display fields
+    -> build sanitized detail and enforce 1 MiB limit
     -> reject duplicate (session_id, request_id)
-    -> enforce per-session limit 8 and global limit 64
-    -> generate approval_id and local deadline
+    -> enforce per-session/global capacity
+    -> generate approval_id and daemon deadline
     -> register pending request
-    -> await decision without holding broker lock
+    -> await Broker decision or Lease expiry
     -> serialize granted/denied response
 ```
 
-HTTP disconnect 仅用于 best-effort 提前清理，不能定义请求是否仍有效；唯一权威结束边界见 [审批生命周期](approval-lifecycle.md)。
+重复 request 返回 `409 Conflict`；per-session 满返回 `429 Too Many Requests`；全局满返回
+`503 Service Unavailable`；Broker 注册失败返回 `500 Internal Server Error`。
 
-容量检查发生在 approval ID 生成、pending 登记与 Debug Capture 写入之前。指定 session 已有 `8` 个 pending request 时返回 `429 Too Many Requests`；全局已有 `64` 个 pending request 时返回 `503 Service Unavailable`。两者都不驱逐、拒绝或缩短已有请求，也不创建 replay/Tombstone 记录。
+webhook caller 不认证，loopback 上的本地进程可以提交形状合法的伪造请求或消耗容量。
+ingress 本身不授予 control interface 权限；control socket 的 owner/peer UID 规则见
+[安全模型](security.md)。
 
-## Control Transport
+## Webhook response
 
-管理面使用 HTTP over Unix socket：
+人工批准：
 
-```text
-$XDG_RUNTIME_DIR/nono-approval/control.sock
+```http
+200 OK
+{"decision":"granted"}
 ```
 
-这样 server 与 CLI/TUI 可以复用 serde DTO 和 HTTP 语义，同时不开放 TCP 管理端口。实现使用 `hyper` 驱动 `tokio::net::UnixStream`，不引入额外 Web 框架。
+人工拒绝、Lease 到期或 daemon shutdown：
 
-socket 权限和 peer identity 要求见 [安全模型](security.md)。
+```http
+200 OK
+{"decision":"denied","reason":"..."}
+```
+
+`cancelled` 表示 handler 已经被丢弃，无法再向 nono 发送决定。nono transport 错误和
+所有非 `2xx` ingress 错误都由 nono 自身 fail closed。
+
+## Control transport
+
+Control interface 使用 HTTP over Unix socket，不开放 TCP 管理端口。默认 socket 由
+`directories::ProjectDirs` 解析：
+
+```text
+ProjectDirs.runtime_dir()/control.sock
+```
+
+当前平台没有 runtime directory 时回退到 `ProjectDirs.data_local_dir()/runtime/control.sock`。
+`--control-socket` 可以为 daemon 和客户端显式指定路径。路径必须符合目标平台
+`sockaddr_un.sun_path` 长度限制，父目录和 socket 权限要求见[安全模型](security.md)。
 
 ## Control API
 
+所有 control response 都是 JSON。连接先验证 peer UID；验证失败的连接被丢弃，不会
+进入 HTTP handler。
+
 ### `GET /v1/status`
 
-返回 daemon 版本、运行时长、pending 数量、队列上限、webhook listener 摘要和 Debug Capture 是否启用。该接口无状态，不创建或决定审批，也是 Profile Validation 探针唯一允许调用的接口。
+返回：
+
+```json
+{
+  "version": "0.1.0",
+  "uptime_seconds": 12,
+  "pending": 1,
+  "max_pending": 64,
+  "max_per_session": 8,
+  "webhook_listen": "127.0.0.1:17443",
+  "debug_capture": {"state":"disabled"}
+}
+```
+
+`debug_capture.state` 为 `disabled`、`enabled` 或 `failed`。enabled 时附带托管文件
+`path`；failed 时附带非敏感 `error_category`。该接口无状态、不创建请求，是 Profile
+Validation probe 唯一调用的接口。
 
 ### `GET /v1/approvals`
 
-默认只返回 pending 摘要：
+只返回 pending，按 `received_at` 升序、再按完整 approval ID 稳定排序：
 
 ```json
 {
@@ -176,7 +186,7 @@ socket 权限和 peer identity 要求见 [安全模型](security.md)。
     {
       "approval_id": "appr_7d8f2c6a1b3e4f50",
       "capability_type": "command",
-      "summary": "gh repo create demo --private",
+      "summary": "date",
       "received_at": "2026-07-27T12:00:00Z",
       "deadline": "2026-07-27T12:04:30Z"
     }
@@ -184,37 +194,58 @@ socket 权限和 peer identity 要求见 [安全模型](security.md)。
 }
 ```
 
-响应中的 approvals 按 `received_at` 升序稳定排序；时间相同时使用完整 approval ID 作为确定性 tie-breaker。这样所有 CLI/TUI 客户端观察到相同 FIFO 顺序。
-
-summary 是导航字段，可以在显示客户端按终端宽度截断；control API 返回受协议字段上限约束的完整 summary，不根据 server 终端宽度预截断。
+API 返回完整 summary；CLI 和 TUI 再按当前可用宽度截断导航文本。
 
 ### `GET /v1/approvals/{approval-id}`
 
-返回单个 pending request 的明文决策详情。正常响应只包含操作本身、必要规则上下文和 Approval Lease，不包含 backend、nono request ID、session ID、child PID、raw JSON 或未知字段。
+approval ID 必须是 `appr_` 加 16 位小写十六进制字符。pending response 的顶层结构为：
 
-决策详情不得做语义截断。客户端按可用宽度自动换行，并在换行后的内容超过视口高度时提供纵向滚动。
-
-显式调试视图：
-
-```text
-GET /v1/approvals/{approval-id}?debug=true
+```json
+{
+  "status": "pending",
+  "approval_id": "appr_7d8f2c6a1b3e4f50",
+  "received_at": "2026-07-27T12:00:00Z",
+  "deadline": "2026-07-27T12:04:30Z",
+  "capability_type": "command",
+  "summary": "date",
+  "source_kind": "tool_sandbox",
+  "fields": [{"label":"Command","value":"date"}]
+}
 ```
 
-调试响应返回完整已知 Wire DTO 和既有来源模型中的技术字段，仍不返回 raw JSON 或未知附加字段。Debug Capture 是否启用只决定这些信息是否落盘，不影响 pending request 的调试查询。
+默认不返回 debug metadata。精确 query `?debug=true` 时额外返回 `claimed_backend`、
+`source_kind` 和已知 `wire_request`。raw JSON、未知附加字段、HTTP headers 和无法从
+wire 可靠得到的 provenance 不返回。
+
+Tombstone 仍在保留期内时返回：
+
+```json
+{
+  "status": "completed",
+  "approval_id": "appr_7d8f2c6a1b3e4f50",
+  "state": "granted",
+  "completed_at": "2026-07-27T12:00:03Z"
+}
+```
+
+未知或已淘汰 ID 返回 `404`；非法 ID 形状返回 `400`。
 
 ### `POST /v1/approvals/{approval-id}/decision`
+
+批准请求：
 
 ```json
 {"decision":"granted"}
 ```
 
-或：
+拒绝请求：
 
 ```json
-{"decision":"denied","reason":"repository creation is outside this task"}
+{"decision":"denied","reason":"outside this task"}
 ```
 
-自定义 denial reason 必须是非空 UTF-8 字符串，编码后最多 `4 KiB`。空值、仅包含零字节的非法输入或超限内容返回 `400 Bad Request`，不得静默截断、替换或提交部分理由。固定的快速拒绝理由同样通过该字段传递。
+reason 必须非空、不能全部由 NUL 字符组成，UTF-8 编码后最多 `4 KiB`；混合 NUL 的
+reason 可以进入 Broker，并在展示或 Debug Capture 时安全转义。校验失败返回 `400`。
 
 成功响应：
 
@@ -222,14 +253,15 @@ GET /v1/approvals/{approval-id}?debug=true
 {"approval_id":"appr_7d8f2c6a1b3e4f50","state":"granted"}
 ```
 
-请求必须使用完整 approval ID 精确匹配。请求已结束、已过期或被其他客户端决定时返回 conflict/not-found 语义，绝不能把决定应用到其他 pending request。
+已完成或已过期 request 返回 `409 Conflict`；未知 ID 返回 `404`。决定只接受完整 ID，
+不会因前缀、队列位置或 ID 重用而作用到其他请求。
 
-合法 ID 形状固定为 `appr_` 加 16 位小写十六进制字符。control API 不接受大写、缺少前缀、长度错误或其他编码形式。
+Control request body 的 hard limit 为 `8 KiB`；超限或无法解析的 decision 返回 `400`。
 
-## 兼容性策略
+## 兼容性
 
-- 用 command、endpoint、capability、network 四类真实 fixture 固定 wire 行为；
-- fixture 与目标 nono 版本类型做兼容性对照；
-- 新增未知字段不应破坏已知 variant；
-- 新增 variant 必须在展示与安全语义明确后才能接受；
-- `schema_version` 只用于本项目控制 DTO 和 Debug Capture，不假设 nono webhook 自带版本字段。
+- `WIRE_ADAPTER_VERSION` 当前为 `1`，写入 Tombstone 和 Debug Capture；
+- 当前测试以四种 variant 的 JSON fixture 固定行为，不把 nono crate 放入生产依赖图；
+- 已知 variant 的额外字段保持兼容并被忽略；
+- 未知 variant、未知 enum 值或缺少展示必填字段 fail closed；
+- `schema_version` 只属于本项目 config 和 Debug Capture，不假设 nono webhook 自带版本字段。
