@@ -24,7 +24,11 @@ fi
 
 response_file="$(mktemp)"
 trap 'rm -f "${response_file}"' EXIT
-status="$(curl --silent --show-error --output "${response_file}" --write-out '%{http_code}' "https://crates.io/api/v1/crates/${crate_name}/${crate_version}")"
+status="$(curl --silent --show-error \
+  --user-agent "nono-approval-publish/${crate_version} (repo: https://github.com/YewFence/nono-approval)" \
+  --output "${response_file}" \
+  --write-out '%{http_code}' \
+  "https://crates.io/api/v1/crates/${crate_name}/${crate_version}")"
 case "${status}" in
   200)
     echo "Crate ${crate_name} ${crate_version} already exists"
