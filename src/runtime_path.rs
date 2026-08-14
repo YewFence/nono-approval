@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn creates_owner_only_directory() {
         let temporary = tempdir().unwrap();
-        let path = temporary.path().join("runtime");
+        let path = temporary.path().canonicalize().unwrap().join("runtime");
         ensure_owner_directory(&path).unwrap();
         let mode = path.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -207,8 +207,9 @@ mod tests {
     #[test]
     fn rejects_symlinked_path_components() {
         let temporary = tempdir().unwrap();
-        let real = temporary.path().join("real");
-        let link = temporary.path().join("link");
+        let root = temporary.path().canonicalize().unwrap();
+        let real = root.join("real");
+        let link = root.join("link");
         std::fs::create_dir(&real).unwrap();
         symlink(&real, &link).unwrap();
         assert!(matches!(
@@ -220,7 +221,7 @@ mod tests {
     #[test]
     fn validation_rejects_permissive_directory() {
         let temporary = tempdir().unwrap();
-        let path = temporary.path().join("runtime");
+        let path = temporary.path().canonicalize().unwrap().join("runtime");
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(

@@ -292,21 +292,23 @@ mod tests {
     #[test]
     fn creates_lists_and_cleans_managed_capture() {
         let temporary = tempdir().unwrap();
-        let capture = DebugCapture::create(temporary.path()).unwrap();
+        let state_dir = temporary.path().canonicalize().unwrap();
+        let capture = DebugCapture::create(&state_dir).unwrap();
         drop(capture);
-        assert_eq!(list_captures(temporary.path()).unwrap().len(), 1);
-        assert_eq!(clean_captures(temporary.path()).unwrap(), 1);
+        assert_eq!(list_captures(&state_dir).unwrap().len(), 1);
+        assert_eq!(clean_captures(&state_dir).unwrap(), 1);
     }
 
     #[test]
     fn refuses_unmanaged_entries() {
         let temporary = tempdir().unwrap();
-        let directory = temporary.path().join("debug-captures");
+        let state_dir = temporary.path().canonicalize().unwrap();
+        let directory = state_dir.join("debug-captures");
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(directory.join("notes.txt"), "unsafe").unwrap();
         assert!(matches!(
-            list_captures(temporary.path()),
+            list_captures(&state_dir),
             Err(DebugCaptureError::UnsafeEntry(_))
         ));
     }
@@ -314,7 +316,8 @@ mod tests {
     #[test]
     fn records_sanitized_completion_with_explicit_delivery_outcome() {
         let temporary = tempdir().unwrap();
-        let capture = DebugCapture::create(temporary.path()).unwrap();
+        let state_dir = temporary.path().canonicalize().unwrap();
+        let capture = DebugCapture::create(&state_dir).unwrap();
         let path = match capture.status() {
             DebugCaptureStatus::Enabled { path } => path,
             status => panic!("unexpected capture status: {status:?}"),

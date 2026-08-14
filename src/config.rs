@@ -202,7 +202,12 @@ mod tests {
     #[test]
     fn setup_is_owner_only_and_idempotent() {
         let temporary = tempdir().unwrap();
-        let path = temporary.path().join("config").join("config.toml");
+        let path = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("config")
+            .join("config.toml");
         setup(&path).unwrap();
         setup(&path).unwrap();
         assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
