@@ -207,6 +207,7 @@ checksum = "sha256:4adb11d727be9ea1220a6a63b2413edbafec1e86c58bffe772043afc500f1
 url = "https://github.com/suzuki-shunsuke/nllint/releases/download/v1.1.0/nllint_linux_amd64.tar.gz"
 url_api = "https://api.github.com/repos/suzuki-shunsuke/nllint/releases/assets/383231629"
 provenance = "github-attestations"
+provenance_verified = true
 
 [tools."github:suzuki-shunsuke/nllint"."platforms.linux-x64-baseline"]
 checksum = "sha256:4adb11d727be9ea1220a6a63b2413edbafec1e86c58bffe772043afc500f1fb9"

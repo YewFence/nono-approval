@@ -8,29 +8,30 @@
   "timezone": "Asia/Shanghai",
   "dependencyDashboard": true,
   "minimumReleaseAge": "3 days",
-  "enabledManagers": ["cargo", "github-actions", "npm", "mise"],
   "lockFileMaintenance": {
     "enabled": true
   },
+  "enabledManagers": [
+    "cargo",
+    "github-actions",
+    "npm",
+    "mise"
+  ],
   "packageRules": [
     {
-      "description": "Group Cargo dependency updates.",
-      "matchManagers": ["cargo"],
-      "groupName": "Cargo dependencies",
-      "rangeStrategy": "bump",
-      "semanticCommitType": "chore",
-      "semanticCommitScope": "cargo-deps"
-    },
-    {
       "description": "Group GitHub Actions updates.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "GitHub Actions",
       "semanticCommitType": "ci",
       "commitMessageTopic": "GitHub Actions"
     },
     {
       "description": "Keep documentation dependency ranges and compatible lockfiles current.",
-      "matchManagers": ["npm"],
+      "matchManagers": [
+        "npm"
+      ],
       "groupName": "npm dependencies",
       "rangeStrategy": "bump",
       "semanticCommitType": "chore",
@@ -38,7 +39,9 @@
     },
     {
       "description": "Group mise tool updates.",
-      "matchManagers": ["mise"],
+      "matchManagers": [
+        "mise"
+      ],
       "groupName": "mise tools",
       "rangeStrategy": "update-lockfile",
       "semanticCommitType": "chore",
@@ -46,8 +49,20 @@
     },
     {
       "description": "Gate major updates through the dependency dashboard.",
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Group Cargo dependency updates.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "Cargo dependencies",
+      "rangeStrategy": "bump",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "cargo-deps"
     }
   ]
 }

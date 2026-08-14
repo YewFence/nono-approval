@@ -2,10 +2,19 @@
 git-cliff = "latest"
 "cargo:cargo-edit" = "0.13.13"
 "aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
+jq = "1"
 
 [tasks.audit]
 description = "Audit Rust dependencies for security advisories"
 run = "cargo audit --deny warnings"
+
+[tasks."crates-io:package:check"]
+description = "Verify the crate can be packaged for crates.io"
+run = "cargo package --locked"
+
+[tasks."crates-io:publish"]
+description = "Publish the release crate to crates.io if its version does not already exist"
+file = "scripts/publish-crate"
 
 [tasks.'actions:pin:check']
 # Need github token to avoid rate limit
@@ -16,6 +25,13 @@ run = "pinact run --check"
 # Need github token to avoid rate limit
 description = "Check for outdated action versions"
 run = "pinact run --update --diff"
+
+[tasks.'actions:versions:check']
+description = "Check pinned GitHub Action versions and outdated releases"
+run = [
+  { task = "actions:pin:check" },
+  { task = "actions:outdated" },
+]
 
 [tasks.'release:version']
 description = "Print the next release version without the v prefix"
@@ -108,7 +124,3 @@ fi
 description = "Build and package a release binary"
 file = "scripts/package-release"
 env = { RELEASE_BINARY = "{{ vars.rust_binary_name }}" }
-
-[tasks.'release:publish-crate']
-description = "Publish the locked Cargo package to crates.io"
-run = "cargo publish --locked"

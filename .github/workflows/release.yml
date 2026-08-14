@@ -17,16 +17,6 @@ on:
         description: "Version tag to publish"
         required: true
         type: string
-      overwrite_latest_tag:
-        description: "Whether to overwrite the latest tag"
-        required: false
-        type: boolean
-        default: false
-      prerelease:
-        description: "Whether to mark the GitHub Release as a pre-release"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -50,6 +40,7 @@ jobs:
       )
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
       checkout_ref: ${{ steps.release.outputs.checkout_ref }}
       should_release: ${{ steps.release.outputs.should_release }}
       create_tag: ${{ steps.release.outputs.create_tag }}
@@ -83,7 +74,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup mise
-        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           install_args: git-cliff
@@ -94,7 +85,6 @@ jobs:
         id: release
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          INPUT_PRERELEASE: ${{ inputs.prerelease }}
           REF_NAME: ${{ github.ref_name }}
           MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
@@ -108,7 +98,6 @@ jobs:
             tag="${INPUT_TAG}"
             checkout_ref="${INPUT_TAG}"
             should_release="true"
-            prerelease="${INPUT_PRERELEASE}"
           elif [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             tag="${REF_NAME}"
             checkout_ref="${REF_NAME}"
@@ -125,7 +114,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && "${tag}" == *-* ]]; then
+          if [[ "${tag}" == *-* ]]; then
             prerelease="true"
           fi
 
@@ -150,6 +139,7 @@ jobs:
 
           {
             echo "tag=${tag}"
+            echo "version=${tag#v}"
             echo "checkout_ref=${checkout_ref}"
             echo "should_release=${should_release}"
             echo "create_tag=${create_tag}"
@@ -219,12 +209,10 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-aarch64
-            packages: gcc-aarch64-linux-gnu
-            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             platform: macos-x86_64
           - os: macos-latest
@@ -247,7 +235,7 @@ jobs:
           ref: ${{ needs.version.outputs.checkout_ref }}
 
       - name: Setup mise
-        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           install_args: rust
@@ -255,24 +243,9 @@ jobs:
           cache_key: "mise-release-${{ matrix.target }}-{{install_args_hash}}-{{file_hash}}"
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
-
-      - name: Install cross compiler
-        if: ${{ matrix.packages }}
-        env:
-          PACKAGES: ${{ matrix.packages }}
-        run: |
-          read -r -a packages <<< "${PACKAGES}"
-          sudo apt-get update
-          sudo apt-get install -y "${packages[@]}"
-
-      - name: Configure linker
-        if: ${{ matrix.linker_env }}
-        env:
-          LINKER_ENV: ${{ matrix.linker_env }}
-        run: echo "${LINKER_ENV}" >> "${GITHUB_ENV}"
 
       - name: Package release binary
         run: mise run release:package
@@ -287,14 +260,11 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs:
-      - version
-      - build
+    needs: [version, build]
     if: ${{ needs.version.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     env:
       MISE_TASK_RUN_AUTO_INSTALL: "false"
       MISE_LOCKED: "1"
@@ -307,10 +277,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup mise
-        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          install_args: git-cliff rust
+          install_args: git-cliff
           add_shims_to_path: true
           cache_key: "mise-release-notes-{{install_args_hash}}-{{file_hash}}"
 
@@ -344,15 +314,6 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Authenticate with crates.io
-        id: crates-io-auth
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1
-
-      - name: Publish crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-        run: mise run release:publish-crate
-
       - name: Create release tag
         if: ${{ needs.version.outputs.create_tag == 'true' }}
         env:
@@ -380,7 +341,9 @@ jobs:
           tag_name: ${{ needs.version.outputs.tag }}
           body_path: ${{ steps.notes.outputs.path }}
           files: dist/*
+
           prerelease: ${{ needs.version.outputs.prerelease }}
+          make_latest: legacy
 
       - name: Summarize published release
         env:
@@ -391,28 +354,46 @@ jobs:
           echo "Published GitHub Release ${release_url}"
           echo "| URL | ${release_url} |" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Move latest tag
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.overwrite_latest_tag }}
+  publish-crate:
+    name: Publish crate to crates.io
+    needs: [version, build, release]
+    if: ${{ needs.version.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MISE_ENV: "ci"
+      MISE_LOCKED: "1"
+      MISE_TASK_RUN_AUTO_INSTALL: "false"
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.version.outputs.checkout_ref }}
+
+      - name: Setup mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          install_args: rust jq
+          add_shims_to_path: true
+          cache_key: "mise-publish-crate-{{install_args_hash}}-{{file_hash}}"
+
+      - name: Authenticate with crates.io
+        id: crates-io-auth
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish crate
         env:
-          RELEASE_TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch --tags --force
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+        run: mise run crates-io:publish
 
-          release_commit="$(git rev-list -n 1 "${RELEASE_TAG}")"
-          git tag -fa latest -m "latest -> ${RELEASE_TAG}" "${release_commit}"
-          git push --force origin refs/tags/latest
-          echo "Moved latest tag to ${RELEASE_TAG}"
-          {
-            echo "| Moved Latest Tag | \`${RELEASE_TAG}\` |"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Record latest tag unchanged
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.overwrite_latest_tag != true }}
-        run: |
-          echo "latest tag was not moved"
-          echo "| Moved Latest Tag | \`skipped\` |" >> "${GITHUB_STEP_SUMMARY}"
 
   close-superseded-release-pr:
     name: Close Superseded Release PR
