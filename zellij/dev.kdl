@@ -1,0 +1,13 @@
+// Development session: approval TUI on top, daemon below.
+layout {
+    pane split_direction="vertical" {
+        pane name="approval TUI" focus=true {
+            command "cargo"
+            args "run" "--locked"
+        }
+        pane name="daemon (serve)" {
+            command "cargo"
+            args "run" "--locked" "--" "serve"
+        }
+    }
+}

@@ -79,6 +79,18 @@ mise link --force nono-approval@dev target/release
 mise use --global nono-approval@dev
 '''
 
+[tasks.dev]
+description = "Start the approval daemon and the interactive TUI side by side in a zellij session"
+tools.zellij = "0.45.1"
+run = '''
+session="nono-dev"
+if zellij ls -s 2>/dev/null | grep -Fxq "${session}"; then
+  zellij attach -f "${session}"
+else
+  zellij -n zellij/dev.kdl -s "${session}"
+fi
+'''
+
 [tasks.build]
 description = "Build an optimized Rust binary"
 run = "cargo build --workspace --all-features --release --locked"

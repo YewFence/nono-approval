@@ -114,7 +114,10 @@ nono-approval completions fish
 ```bash
 mise run test
 mise run check
+mise run dev
 ```
+
+`mise run dev` 在上下分屏的 zellij 会话里同时启动 daemon（下方）与交互 TUI（上方），会话名为 `nono-dev`，重复运行会重新挂载到已有会话。
 
 架构、安全边界、协议和验证现状见 [`docs/design/overview.md`](docs/design/overview.md)。
 
