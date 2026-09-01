@@ -1,4 +1,13 @@
 ## What's Changed in 0.2.0
+* chore: release v0.2.0 by @github-actions[bot] in [#3](https://github.com/YewFence/nono-approval/pull/3)
+* bump version and install tool's deps by @YewFence
+* translate project documentation to English by @YewFence
+* add `mise run dev` split zellij session by @YewFence
+* bump lockfile by @YewFence
+
+**Full Changelog**: https://github.com/YewFence/nono-approval/compare/v0.1.0...v0.2.0
+
+## What's Changed in 0.2.0
 * bump version and install tool's deps by @YewFence
 * translate project documentation to English by @YewFence
 * add `mise run dev` split zellij session by @YewFence
