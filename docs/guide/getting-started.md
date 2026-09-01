@@ -7,35 +7,27 @@ cargo install nono-approval
 nono-approval setup
 ```
 
-`setup` 使用平台原生项目目录创建或验证 owner-only `config.toml`，然后输出当前
-Webhook Endpoint 和 nono approval backend 片段。将片段合入最终 nono profile；它不会
-修改 profile。
+`setup` creates or verifies the owner-only `config.toml` in the platform-native project directory, then prints the current Webhook Endpoint and the nono approval backend snippet. Merge the snippet into your final nono profile; it never modifies the profile itself.
 
 ## Usage
 
-在一个终端启动 daemon：
+Start the daemon in one terminal:
 
 ```bash
 nono-approval serve
 ```
 
-在另一个终端运行 `nono-approval` 打开 TUI。daemon 尚未启动时 TUI 会等待并每秒重连。
-按 `a` 批准、`d` 用固定理由快速拒绝、`D` 填写理由后拒绝；浏览态 Enter 不执行审批决定。
+Run `nono-approval` in another terminal to open the TUI. When the daemon is not yet running, the TUI waits and reconnects every second. Press `a` to approve, `d` to deny quickly with a fixed reason, `D` to deny after entering a reason; Enter in browse mode never executes an approval decision.
 
 ## Configuration
 
-配置由 `setup` 创建，必须包含 `schema_version = 1`。默认 webhook 为
-`127.0.0.1:17443`，Approval Lease 为 `270s`，pending 上限为全局 `64`、每 session
-`8`，请求体上限为 `256KiB`。control socket 路径由平台项目目录解析，不写入该配置
-文件；需要临时指定路径时使用隐藏的 `--control-socket` 参数。
+The config is created by `setup` and must contain `schema_version = 1`. The default webhook is `127.0.0.1:17443`, the Approval Lease is `270s`, the pending limits are `64` globally and `8` per session, and the request body limit is `256KiB`. The control socket path is resolved from the platform project directory and is not written into this config file; use the hidden `--control-socket` argument when you need to override the path temporarily.
 
-运行 `nono-approval config validate --profile <name-or-path>` 可以通过真实 nono
-sandbox 检查 control socket 隔离；只有 sandbox 已报告启动且连接返回 `EACCES` 或
-`EPERM` 才判定通过。命令可能额外执行目标 profile 的宿主侧 session hooks。
+Run `nono-approval config validate --profile <name-or-path>` to check control socket isolation through a real nono sandbox; it passes only if the sandbox is confirmed started and the connection returns `EACCES` or `EPERM`. The command may additionally execute the target profile's host-side session hooks.
 
-## 下一步
+## Next steps
 
-- [架构总览](../design/overview.md)
-- [CLI 与 TUI](../design/cli-and-tui.md)
-- [运行、配置与发布](../design/operations.md)
-- [验证现状](../design/testing.md)
+- [Architecture overview](../design/overview.md)
+- [CLI and TUI](../design/cli-and-tui.md)
+- [Operations, configuration, and releases](../design/operations.md)
+- [Verification status](../design/testing.md)

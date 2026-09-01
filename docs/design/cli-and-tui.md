@@ -1,12 +1,11 @@
-# CLI 与 TUI
+# CLI and TUI
 
-本文描述当前 `src/cli.rs` 和 `src/interactive.rs` 的用户界面。control JSON 和状态码
-见[协议与适配](protocol.md)，输入安全约束见[安全模型](security.md)。
+This document describes the user interface of the current `src/cli.rs` and `src/interactive.rs`. For control JSON and status codes see [Protocol and adaptation](protocol.md); for input security constraints see [Security model](security.md).
 
-## 命令总览
+## Command overview
 
 ```text
-nono-approval                         # 交互式审批界面
+nono-approval                         # interactive approval interface
 nono-approval setup
 nono-approval config validate --profile <name-or-path>
 nono-approval serve [OPTIONS]
@@ -20,33 +19,28 @@ nono-approval debug clean
 nono-approval completions <bash|elvish|fish|powershell|zsh>
 ```
 
-不带子命令时直接进入 TUI。`__probe-control-socket` 是供 Profile Validation 调用的
-隐藏子命令，不作为用户 interface 承诺。
+Running without a subcommand enters the TUI directly. `__probe-control-socket` is a hidden subcommand used by Profile Validation and is not promised as a user interface.
 
-所有 approval ID 在 clap 解析阶段就必须是完整的 `appr_` 加 16 位小写十六进制字符。
-`show` 支持 pending detail 和保留期内的 completed Tombstone；`approve`/`deny` 只接受
-仍处于 pending 的请求。
+Every approval ID must be the complete `appr_` plus 16 lowercase hex characters already at clap parse time. `show` supports pending details and completed Tombstones still in retention; `approve`/`deny` only accept requests that are still pending.
 
 ## `setup`
 
-`setup` 解析 `ProjectDirs` 的平台原生 config path，创建或验证：
+`setup` resolves the platform-native config path from `ProjectDirs` and creates or verifies:
 
 ```text
 <ProjectDirs.config_dir()>/config.toml
 ```
 
-配置文件由当前用户拥有、权限 `0600`，并使用 `schema_version = 1`。首次创建使用原子
-临时文件；已有文件则只执行安全加载和 schema/值验证，不覆盖、不迁移。
+The config file is owned by the current user with `0600` permissions and uses `schema_version = 1`. First creation writes through an atomic temp file; an existing file only gets safe loading and schema/value validation — never overwritten, never migrated.
 
-成功输出：
+On success it prints:
 
-1. 配置文件路径；
-2. 当前 `webhook.listen` 生成的完整 endpoint；
-3. `local-broker` webhook backend 和 `approval_defaults` 的 nono JSON 片段，timeout
-   为 `300s`；
-4. Profile Validation 命令提示。
+1. the config file path;
+2. the full endpoint derived from the current `webhook.listen`;
+3. the nono JSON snippet for the `local-broker` webhook backend and `approval_defaults`, with a `300s` timeout;
+4. a hint about the Profile Validation command.
 
-`setup` 不启动 daemon，不修改 nono profile，不创建 control socket。
+`setup` does not start the daemon, does not modify the nono profile, and does not create the control socket.
 
 ## `config validate`
 
@@ -54,13 +48,9 @@ nono-approval completions <bash|elvish|fish|powershell|zsh>
 nono-approval config validate --profile <name-or-path>
 ```
 
-命令在启动真实 probe 前向 stderr 提示目标 profile 的宿主侧 session hooks 可能执行。
-probe 必须先输出 `nono-approval-probe-v1 started`，然后在 sandbox 内连接 control
-socket；只有 errno `1`（`EPERM`）或 `13`（`EACCES`）才成功。可达、未启动、协议错误、
-其他 errno 和 15 秒超时都返回非零。
+Before starting the real probe, the command warns on stderr that the target profile's host-side session hooks may run. The probe must first print `nono-approval-probe-v1 started`, then connect to the control socket inside the sandbox; only errno `1` (`EPERM`) or `13` (`EACCES`) counts as success. Reachable, not started, protocol errors, other errnos, and the 15-second timeout all return non-zero.
 
-该命令可用隐藏的 `--control-socket` 指定路径，但不会创建 approval request，也不会
-调用 decision API。
+The hidden `--control-socket` argument can point the command at a specific path, but the command never creates an approval request and never calls the decision API.
 
 ## `serve`
 
@@ -78,25 +68,21 @@ Options:
   --log-format text|json      text or structured JSON logs
 ```
 
-`serve` 先加载平台 config，再按以下顺序合并运行值：
+`serve` loads the platform config first, then merges runtime values in this order:
 
 ```text
-显式 CLI 参数 > config.toml > 内置默认值
+explicit CLI arguments > config.toml > built-in defaults
 ```
 
-CLI override 仍检查 loopback、正数限制以及 `max_per_session <= max_pending`。缺少配置、
-不安全权限、未知字段、非法 schema 或无效值都会启动失败；`serve` 不隐式执行 `setup`。
+CLI overrides still go through the same loopback, positive-number, and `max_per_session <= max_pending` checks. A missing config, insecure permissions, unknown fields, an invalid schema, or invalid values all fail startup; `serve` never runs `setup` implicitly.
 
-默认值来自实现：Lease `270s`、global `64`、per-session `8`、body `256KiB`、detail
-`1MiB`。Webhook path 固定，但 listener host/port 可以显式覆盖；覆盖后必须同步修改
-nono profile。
+Defaults come from the implementation: Lease `270s`, global `64`, per-session `8`, body `256KiB`, detail `1MiB`. The webhook path is fixed, but the listener host/port can be overridden explicitly; after overriding, the nono profile must be updated to match.
 
-daemon 启动成功后打印 webhook endpoint 和实际 control socket。启用 Debug Capture 时
-还打印本次 capture 文件路径。
+A successful daemon start prints the webhook endpoint and the actual control socket. When Debug Capture is enabled it also prints the capture file path for this run.
 
 ## `status`
 
-示例：
+Example:
 
 ```text
 Daemon: running
@@ -106,21 +92,18 @@ Webhook: 127.0.0.1:17443
 Debug capture: enabled (/.../debug-captures/2026-...ndjson)
 ```
 
-Debug Capture 可能显示 `disabled`、`enabled (path)` 或 `failed (category)`。失败状态
-不会自动恢复，但不会阻塞审批。
+Debug Capture may show `disabled`, `enabled (path)`, or `failed (category)`. A failed state never auto-recovers, but never blocks approvals either.
 
 ## `list`
 
-默认人类输出只有三个字段：
+Default human output has exactly three fields:
 
 ```text
 ID                     TYPE        REQUEST
 appr_7d8f2c6a1b3e4f50   command     date
 ```
 
-`--json` 输出 control API 的完整 `ApprovalList`。人类输出的 summary 按当前终端宽度
-使用 `…` 截断；API 和 JSON 输出不按终端宽度截断。列表只包含 pending request，不包含
-Tombstone。
+`--json` outputs the full `ApprovalList` of the control API. Human summary output truncates to the current terminal width with `…`; API and JSON output never truncate to terminal width. The list only contains pending requests, never Tombstones.
 
 ## `show`
 
@@ -129,7 +112,7 @@ nono-approval show appr_7d8f2c6a1b3e4f50
 nono-approval show --debug appr_7d8f2c6a1b3e4f50
 ```
 
-pending 请求以字段逐行输出：
+Pending requests print field by field:
 
 ```text
 Approval: appr_7d8f2c6a1b3e4f50
@@ -142,14 +125,11 @@ Received: 2026-07-27T12:00:00Z
 Deadline: 2026-07-27T12:04:30Z
 ```
 
-`--debug` 额外输出 claimed backend、source kind 和已知 Wire DTO。已结束但 Tombstone
-仍保留时只输出 approval ID、终态和完成时间；详情不会恢复。未知或已过期 Tombstone
-返回错误。
+`--debug` additionally prints the claimed backend, source kind, and the known Wire DTO. For completed requests whose Tombstone is still in retention, only the approval ID, terminal state, and completion time are printed; details are never restored. Unknown or evicted Tombstones return an error.
 
-字段值先经过终端安全清理。CLI 不自行做语义截断或横向滚动；长行由终端正常换行，
-只有 `list` summary 使用显式省略号。
+Field values are terminal-sanitized first. The CLI does no semantic truncation or horizontal scrolling of its own; long lines wrap normally in the terminal, and only the `list` summary uses an explicit ellipsis.
 
-## `approve` 与 `deny`
+## `approve` and `deny`
 
 ```bash
 nono-approval approve appr_7d8f2c6a1b3e4f50
@@ -157,23 +137,18 @@ nono-approval deny appr_7d8f2c6a1b3e4f50
 nono-approval deny appr_7d8f2c6a1b3e4f50 --reason "outside this task"
 ```
 
-命令本身就是最终决定，不二次确认。无 `--reason` 的 `deny` 使用固定理由
-`denied by local user`。reason 必须通过 Broker 的统一验证：非空、不全为 NUL、UTF-8
-编码后不超过 `4 KiB`。
+The command itself is the final decision; there is no second confirmation. `deny` without `--reason` uses the fixed reason `denied by local user`. Reasons must pass the Broker's unified validation: non-empty, not all NUL, and at most `4 KiB` after UTF-8 encoding.
 
-`approve` 和 `deny` 不支持 `--latest`、`--all`、操作名或 ID 前缀。未知、已结束、已过期
-或被其他客户端决定的请求失败，绝不回退到其他队列项。
+`approve` and `deny` do not support `--latest`, `--all`, operation names, or ID prefixes. Unknown, completed, expired, or already-decided requests fail, never falling back to another queue item.
 
-## Debug Capture 命令
+## Debug Capture commands
 
 ```bash
 nono-approval debug captures
 nono-approval debug clean
 ```
 
-`debug captures` 只列出托管文件的名称、创建时间和字节数，不读取内容。
-`debug clean` 删除全部通过 owner、regular file、`0600` 和固定命名规则校验的文件，不
-递归删除目录；遇到不安全条目时返回非零。
+`debug captures` lists only the names, creation times, and byte sizes of managed files — it never reads their content. `debug clean` deletes every file that passes the owner, regular-file, `0600`, and fixed-naming checks, and never deletes directories recursively; encountering an unsafe entry returns non-zero.
 
 ## Shell completion
 
@@ -185,46 +160,36 @@ nono-approval completions powershell
 nono-approval completions zsh
 ```
 
-## TUI 入口与刷新
+## TUI entry and refresh
 
 ```bash
 nono-approval
 ```
 
-TUI 只通过 control client 工作。初始状态为 `Disconnected — waiting for daemon…`，
-control socket 不可用时每 `1s` 重连；连接成功后每 `500ms` 获取 list、status 和当前
-detail。没有 pending 时保持打开并显示等待状态，不自动运行 `setup` 或启动 daemon。
+The TUI works only through the control client. The initial state is `Disconnected — waiting for daemon…`; while the control socket is unavailable it reconnects every `1s`, and once connected it fetches the list, status, and current detail every `500ms`. With nothing pending it stays open showing a waiting state and never runs `setup` or starts the daemon automatically.
 
-断线会立即清除 approvals、选择、详情、详情滚动和未提交的 denial reason。重连后只使用
-新 daemon 当前返回的数据，不能跨 daemon 生命周期复用旧快照。
+A disconnect immediately clears approvals, selection, detail, detail scroll, and any unsubmitted denial reason. After reconnecting, only data freshly returned by the new daemon is used; old snapshots are never reused across daemon lifetimes.
 
-刷新时优先按完整 approval ID 保留当前选择；目标消失后退回旧索引仍在范围内的项目。
-没有旧选择时选择第一项。详情请求遇到 completed 或 not-found 会清空详情，不会把决定
-转移到其他项目。
+On refresh, the current selection is preserved by full approval ID first; when the target disappears it falls back to the item still in range at the old index. With no old selection it picks the first item. A detail request that hits completed or not-found clears the detail and never transfers the decision to another item.
 
-## TUI 布局与键位
+## TUI layout and keybindings
 
-宽度至少 `90` 列时使用 38%/62% 左右双栏；更窄时显示单栏，`Tab` 切换队列和详情，
-默认显示队列。详情使用 ratatui `Wrap` 自动换行和纵向 scroll；不会水平滚动或截断
-字段。双栏/单栏切换不改变选中的 approval ID。
+At least `90` columns wide it uses a 38%/62% left/right two-pane layout; narrower shows a single pane where `Tab` switches between the queue and the detail, with the queue shown by default. The detail uses ratatui `Wrap` line wrapping and vertical scrolling; fields are never scrolled horizontally or truncated. Switching between two-pane and single-pane never changes the selected approval ID.
 
 ```text
-j / Down       下一个请求
-k / Up         上一个请求
-a              立即批准
-d              用固定理由立即拒绝
-D              打开理由输入态
-q              退出 TUI
-Ctrl-c         退出 TUI
-Tab            窄屏切换队列/详情
-Ctrl-d/u       详情下/上滚动
-PageDown/Up    详情下/上滚动
-g / G          详情顶部/底部
+j / Down        next request
+k / Up          previous request
+a               approve immediately
+d               deny immediately with a fixed reason
+D               open the reason input mode
+q               quit the TUI
+Ctrl-c          quit the TUI
+Tab             switch queue/detail on narrow screens
+Ctrl-d/u        scroll detail down/up
+PageDown/Up     scroll detail down/up
+g / G           detail top/bottom
 ```
 
-浏览态 Enter 没有任何审批含义。理由输入态 Enter 提交、Esc 丢弃；输入期间目标
-approval ID 固定，目标若在下一次刷新中结束，提交只显示失败。`D` 和 CLI `--reason`
-都使用 Broker 的同一套验证规则。
+Enter in browse mode has no approval meaning. In reason input mode, Enter submits and Esc discards; the target approval ID is fixed while typing, and if the target completes during the next refresh, submission just shows a failure. `D` and the CLI `--reason` use the same Broker validation rules.
 
-TUI 在正常返回和 panic hook 中调用 ratatui restore，恢复 alternate screen、raw mode、
-光标和终端状态。
+The TUI calls ratatui restore on normal return and in the panic hook, restoring the alternate screen, raw mode, cursor, and terminal state.

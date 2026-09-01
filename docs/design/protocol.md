@@ -1,12 +1,10 @@
-# 协议与适配
+# Protocol and Adaptation
 
-本文是当前 Wire Adapter、webhook ingress 和 Unix-socket control interface 的事实来源。
-它描述代码实际解析和返回的 JSON；nono `0.69` 的外部事实见[调研记录](../research/nono-0.69.md)。
+This document is the source of truth for the current Wire Adapter, webhook ingress, and Unix-socket control interface. It describes the JSON the code actually parses and returns; for external facts about nono `0.69` see the [research notes](../research/nono-0.69.md).
 
 ## Wire Adapter
 
-生产二进制不依赖 `nono` crate。项目内的 `KnownApprovalRequest` 覆盖当前实现支持的四种
-variant：
+The production binary does not depend on the `nono` crate. The in-project `KnownApprovalRequest` covers the four variants the current implementation supports:
 
 ```text
 command
@@ -15,7 +13,7 @@ capability
 network
 ```
 
-外层 envelope 为：
+The outer envelope is:
 
 ```json
 {
@@ -34,69 +32,61 @@ network
 }
 ```
 
-`backend` 必须是非空字符串，`request` 必须能反序列化为已知 variant。已知 variant
-允许额外字段，额外字段不会进入 `KnownApprovalRequest`、普通展示或 debug response；
-外层 unknown field 也不影响解析。`raw_request` 只在 Broker pending 期间的内存中保留；
-Debug Capture 记录已知 Wire DTO，不记录 raw JSON。raw request 不能绕过已知 DTO 验证
-成为审批通道。
+`backend` must be a non-empty string, and `request` must deserialize into a known variant. Known variants allow extra fields; extra fields never enter `KnownApprovalRequest`, ordinary display, or debug responses, and unknown outer fields do not affect parsing either. `raw_request` is only kept in memory while the Broker request is pending; Debug Capture records the known Wire DTO, not the raw JSON. The raw request can never bypass known-DTO validation to become an approval channel.
 
-公共身份字段为：
+Shared identity fields:
 
 ```rust
 request_id: String
 session_id: String
 ```
 
-二者不能为空。其余必填字段按 variant 验证：
+Neither may be empty. The remaining required fields are validated per variant:
 
-| variant | 必填字段 | 普通展示字段 |
+| variant | required fields | ordinary display fields |
 | --- | --- | --- |
-| `command` | `command`、`caller`、`intercept_rule` | Command、Requested by、Caller、Rule、Reason |
-| `endpoint` | `route_id`、`upstream`、`method`、`path`、`rule_label` | Endpoint、Route、Upstream、Rule、Reason |
-| `capability` | `path` | Path、Access、Reason |
-| `network` | `host` | Destination、Protocol、Resolved IPs、Reason |
+| `command` | `command`, `caller`, `intercept_rule` | Command, Requested by, Caller, Rule, Reason |
+| `endpoint` | `route_id`, `upstream`, `method`, `path`, `rule_label` | Endpoint, Route, Upstream, Rule, Reason |
+| `capability` | `path` | Path, Access, Reason |
+| `network` | `host` | Destination, Protocol, Resolved IPs, Reason |
 
-`access` 只能是 `Read`、`Write` 或 `ReadWrite`；`protocol` 只能是 `tcp` 或 `udp`。
-`child_pid`、`session_id`、`request_id` 等 wire 字段会保留在内部 DTO，但普通展示只
-使用上表字段。
+`access` may only be `Read`, `Write`, or `ReadWrite`; `protocol` may only be `tcp` or `udp`. Wire fields such as `child_pid`, `session_id`, and `request_id` stay in the internal DTO, but ordinary display only uses the fields in the table above.
 
-## Webhook 请求
+## Webhook request
 
-监听地址默认 `127.0.0.1:17443`，地址可由 config 或 `serve --webhook-listen` 覆盖，但
-必须是 loopback IP。path 固定为：
+The listener defaults to `127.0.0.1:17443`; the address can be overridden by config or `serve --webhook-listen`, but must be a loopback IP. The path is fixed:
 
 ```text
 POST /v1/webhooks/approval
 Content-Type: application/json
 ```
 
-实现只接受精确的 `application/json` content type，不接受缺失、其他 media type 或带
-参数的变体。方法错误返回 `405`，path 错误返回 `404`。
+The implementation only accepts the exact `application/json` content type, not missing content types, other media types, or parameterized variants. A wrong method returns `405`; a wrong path returns `404`.
 
-读取 body 时使用配置的 hard limit，默认 `256 KiB`；超过限制会停止读取并返回：
+Body reads use the configured hard limit, `256 KiB` by default; over the limit, reading stops and the response is:
 
 ```http
 413 Payload Too Large
 {"error":"request body is too large"}
 ```
 
-body transport error、非法 JSON、空 backend、未知/incomplete variant 或空必填字段返回：
+Body transport errors, invalid JSON, an empty backend, unknown/incomplete variants, or empty required fields return:
 
 ```http
 400 Bad Request
 {"error":"invalid webhook request"}
 ```
 
-Wire Adapter 构造安全展示详情后，详情 JSON 大小默认不得超过 `1 MiB`；超限返回：
+After the Wire Adapter constructs the safe display detail, the detail JSON may not exceed `1 MiB` by default; over the limit:
 
 ```http
 422 Unprocessable Entity
 {"error":"approval detail is too large"}
 ```
 
-上述 ingress 失败都不会进入 Broker pending、replay cache 或 Debug Capture。
+None of the ingress failures above ever enter Broker pending, the replay cache, or Debug Capture.
 
-## Webhook 处理流程
+## Webhook processing flow
 
 ```text
 validate method/path/content-type
@@ -112,53 +102,45 @@ validate method/path/content-type
     -> serialize granted/denied response
 ```
 
-重复 request 返回 `409 Conflict`；per-session 满返回 `429 Too Many Requests`；全局满返回
-`503 Service Unavailable`；Broker 注册失败返回 `500 Internal Server Error`。
+Duplicate requests return `409 Conflict`; a full per-session queue returns `429 Too Many Requests`; a full global queue returns `503 Service Unavailable`; a Broker registration failure returns `500 Internal Server Error`.
 
-webhook caller 不认证，loopback 上的本地进程可以提交形状合法的伪造请求或消耗容量。
-ingress 本身不授予 control interface 权限；control socket 的 owner/peer UID 规则见
-[安全模型](security.md)。
+Webhook callers are not authenticated: any local process on loopback can submit a well-formed forged request or consume capacity. Ingress itself grants no control interface authority; owner/peer UID rules for the control socket are in [Security model](security.md).
 
 ## Webhook response
 
-人工批准：
+Human approval:
 
 ```http
 200 OK
 {"decision":"granted"}
 ```
 
-人工拒绝、Lease 到期或 daemon shutdown：
+Human denial, Lease expiry, or daemon shutdown:
 
 ```http
 200 OK
 {"decision":"denied","reason":"..."}
 ```
 
-`cancelled` 表示 handler 已经被丢弃，无法再向 nono 发送决定。nono transport 错误和
-所有非 `2xx` ingress 错误都由 nono 自身 fail closed。
+`cancelled` means the handler has already been dropped and no decision can be sent to nono anymore. nono transport errors and all non-`2xx` ingress errors fail closed within nono itself.
 
 ## Control transport
 
-Control interface 使用 HTTP over Unix socket，不开放 TCP 管理端口。默认 socket 由
-`directories::ProjectDirs` 解析：
+The control interface is HTTP over a Unix socket; no TCP management port is opened. The default socket is resolved by `directories::ProjectDirs`:
 
 ```text
 ProjectDirs.runtime_dir()/control.sock
 ```
 
-当前平台没有 runtime directory 时回退到 `ProjectDirs.data_local_dir()/runtime/control.sock`。
-`--control-socket` 可以为 daemon 和客户端显式指定路径。路径必须符合目标平台
-`sockaddr_un.sun_path` 长度限制，父目录和 socket 权限要求见[安全模型](security.md)。
+When the current platform has no runtime directory, it falls back to `ProjectDirs.data_local_dir()/runtime/control.sock`. `--control-socket` can specify the path explicitly for both the daemon and clients. The path must fit the target platform's `sockaddr_un.sun_path` length limit; parent directory and socket permission requirements are in [Security model](security.md).
 
 ## Control API
 
-所有 control response 都是 JSON。连接先验证 peer UID；验证失败的连接被丢弃，不会
-进入 HTTP handler。
+All control responses are JSON. Connections are peer-UID-checked first; a connection that fails verification is dropped before reaching the HTTP handler.
 
 ### `GET /v1/status`
 
-返回：
+Returns:
 
 ```json
 {
@@ -172,13 +154,11 @@ ProjectDirs.runtime_dir()/control.sock
 }
 ```
 
-`debug_capture.state` 为 `disabled`、`enabled` 或 `failed`。enabled 时附带托管文件
-`path`；failed 时附带非敏感 `error_category`。该接口无状态、不创建请求，是 Profile
-Validation probe 唯一调用的接口。
+`debug_capture.state` is `disabled`, `enabled`, or `failed`. When enabled it carries the managed file `path`; when failed it carries a non-sensitive `error_category`. This endpoint is stateless, creates no requests, and is the only endpoint the Profile Validation probe calls.
 
 ### `GET /v1/approvals`
 
-只返回 pending，按 `received_at` 升序、再按完整 approval ID 稳定排序：
+Returns only pending requests, ordered by `received_at` ascending, then stably by full approval ID:
 
 ```json
 {
@@ -194,11 +174,11 @@ Validation probe 唯一调用的接口。
 }
 ```
 
-API 返回完整 summary；CLI 和 TUI 再按当前可用宽度截断导航文本。
+The API returns the full summary; the CLI and TUI truncate navigation text to the available width.
 
 ### `GET /v1/approvals/{approval-id}`
 
-approval ID 必须是 `appr_` 加 16 位小写十六进制字符。pending response 的顶层结构为：
+The approval ID must be `appr_` plus 16 lowercase hex characters. The top-level structure of a pending response:
 
 ```json
 {
@@ -213,11 +193,9 @@ approval ID 必须是 `appr_` 加 16 位小写十六进制字符。pending respo
 }
 ```
 
-默认不返回 debug metadata。精确 query `?debug=true` 时额外返回 `claimed_backend`、
-`source_kind` 和已知 `wire_request`。raw JSON、未知附加字段、HTTP headers 和无法从
-wire 可靠得到的 provenance 不返回。
+Debug metadata is not returned by default. With the exact query `?debug=true`, the response additionally returns `claimed_backend`, `source_kind`, and the known `wire_request`. Raw JSON, unknown extra fields, HTTP headers, and provenance that cannot be reliably derived from the wire are not returned.
 
-Tombstone 仍在保留期内时返回：
+A Tombstone still in retention returns:
 
 ```json
 {
@@ -228,40 +206,38 @@ Tombstone 仍在保留期内时返回：
 }
 ```
 
-未知或已淘汰 ID 返回 `404`；非法 ID 形状返回 `400`。
+Unknown or evicted IDs return `404`; an invalid ID shape returns `400`.
 
 ### `POST /v1/approvals/{approval-id}/decision`
 
-批准请求：
+Approve:
 
 ```json
 {"decision":"granted"}
 ```
 
-拒绝请求：
+Deny:
 
 ```json
 {"decision":"denied","reason":"outside this task"}
 ```
 
-reason 必须非空、不能全部由 NUL 字符组成，UTF-8 编码后最多 `4 KiB`；混合 NUL 的
-reason 可以进入 Broker，并在展示或 Debug Capture 时安全转义。校验失败返回 `400`。
+The reason must be non-empty, must not consist entirely of NUL characters, and must be at most `4 KiB` after UTF-8 encoding; a reason with embedded NULs may enter the Broker and is safely escaped for display or Debug Capture. Validation failure returns `400`.
 
-成功响应：
+Success response:
 
 ```json
 {"approval_id":"appr_7d8f2c6a1b3e4f50","state":"granted"}
 ```
 
-已完成或已过期 request 返回 `409 Conflict`；未知 ID 返回 `404`。决定只接受完整 ID，
-不会因前缀、队列位置或 ID 重用而作用到其他请求。
+Completed or expired requests return `409 Conflict`; unknown IDs return `404`. Decisions accept only full IDs and never act on another request because of a prefix, queue position, or ID reuse.
 
-Control request body 的 hard limit 为 `8 KiB`；超限或无法解析的 decision 返回 `400`。
+The hard limit for control request bodies is `8 KiB`; oversized or unparsable decisions return `400`.
 
-## 兼容性
+## Compatibility
 
-- `WIRE_ADAPTER_VERSION` 当前为 `1`，写入 Tombstone 和 Debug Capture；
-- 当前测试以四种 variant 的 JSON fixture 固定行为，不把 nono crate 放入生产依赖图；
-- 已知 variant 的额外字段保持兼容并被忽略；
-- 未知 variant、未知 enum 值或缺少展示必填字段 fail closed；
-- `schema_version` 只属于本项目 config 和 Debug Capture，不假设 nono webhook 自带版本字段。
+- `WIRE_ADAPTER_VERSION` is currently `1` and is written into Tombstones and Debug Capture;
+- current tests pin behavior with JSON fixtures for the four variants and keep the nono crate out of the production dependency graph;
+- extra fields on known variants stay compatible and are ignored;
+- unknown variants, unknown enum values, or missing required display fields fail closed;
+- `schema_version` belongs only to this project's config and Debug Capture; the nono webhook is never assumed to carry a version field of its own.

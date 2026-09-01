@@ -2,41 +2,41 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   base: '/nono-approval/',
-  lang: 'zh-CN',
+  lang: 'en-US',
   title: 'nono-approval',
-  description: 'nono 本地审批守护进程文档',
+  description: 'Documentation for the nono local approval daemon',
 
   themeConfig: {
     nav: [
-      { text: '指南', link: '/guide/getting-started' },
-      { text: '设计', link: '/design/overview' },
+      { text: 'Guide', link: '/guide/getting-started' },
+      { text: 'Design', link: '/design/overview' },
       { text: 'GitHub', link: 'https://github.com/YewFence/nono-approval' }
     ],
 
     sidebar: [
       {
-        text: '指南',
+        text: 'Guide',
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' }
         ]
       },
       {
-        text: '设计',
+        text: 'Design',
         items: [
-          { text: '架构总览', link: '/design/overview' },
-          { text: '领域语言', link: '/design/domain-language' },
-          { text: '审批生命周期', link: '/design/approval-lifecycle' },
-          { text: '协议与适配', link: '/design/protocol' },
-          { text: '安全模型', link: '/design/security' },
-          { text: 'CLI 与 TUI', link: '/design/cli-and-tui' },
-          { text: '运行、配置与发布', link: '/design/operations' },
-          { text: '验证现状', link: '/design/testing' }
+          { text: 'Architecture Overview', link: '/design/overview' },
+          { text: 'Domain Language', link: '/design/domain-language' },
+          { text: 'Approval Lifecycle', link: '/design/approval-lifecycle' },
+          { text: 'Protocol and Adaptation', link: '/design/protocol' },
+          { text: 'Security Model', link: '/design/security' },
+          { text: 'CLI and TUI', link: '/design/cli-and-tui' },
+          { text: 'Operations, Configuration, and Releases', link: '/design/operations' },
+          { text: 'Verification Status', link: '/design/testing' }
         ]
       },
       {
-        text: '记录',
+        text: 'Records',
         items: [
-          { text: 'nono 0.69 调研', link: '/research/nono-0.69' },
+          { text: 'nono 0.69 Research', link: '/research/nono-0.69' },
           { text: 'ADR 0001', link: '/adr/0001-daemon-deadline-defines-approval-lease' },
           { text: 'ADR 0002', link: '/adr/0002-support-linux-and-macos-through-local-platform-adapters' },
           { text: 'ADR 0003', link: '/adr/0003-leave-same-uid-control-isolation-to-deployment' }

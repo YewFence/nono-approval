@@ -1,47 +1,41 @@
-# 运行、配置与发布
+# Operations, Configuration, and Releases
 
-本文描述当前实现的项目路径、配置加载、服务运行方式、平台 adapter、仓库结构和
-发布产物。安全细节见[安全模型](security.md)。
+This document describes the current implementation's project paths, config loading, service operation, platform adapters, repository layout, and release artifacts. For security details see [Security model](security.md).
 
-## 平台范围
+## Platform scope
 
-当前代码在 Linux 与 macOS 上实现 control peer identity：
+The current code implements control peer identity on Linux and macOS:
 
-- Linux：`nix` 的 `SO_PEERCRED`；
-- macOS：`nix` 的 `LOCAL_PEERPID` 与 `getpeereid`；
-- 其他平台：peer identity adapter 返回 unsupported，因此不能安全提供 control service。
+- Linux: `SO_PEERCRED` from `nix`;
+- macOS: `LOCAL_PEERPID` with `getpeereid` from `nix`;
+- other platforms: the peer identity adapter returns unsupported, so a control service cannot be provided safely.
 
-生产 crate 全局 `unsafe_code = "forbid"`，不直接调用 `libc`。Broker、协议、展示和
-TUI 不包含平台分支。
+The production crate globally sets `unsafe_code = "forbid"` and never calls `libc` directly. The Broker, protocol, display, and TUI contain no platform branches.
 
-## 项目路径
+## Project paths
 
-`ProjectPaths::resolve()` 使用：
+`ProjectPaths::resolve()` uses:
 
 ```rust
 ProjectDirs::from("dev", "YewFence", "nono-approval")
 ```
 
-并解析以下路径：
+and resolves these paths:
 
-| 用途 | 解析方式 |
+| Purpose | Resolution |
 | --- | --- |
 | config | `ProjectDirs.config_dir()/config.toml` |
-| state | `ProjectDirs.state_dir()`；没有 state dir 时回退到 `data_local_dir()` |
-| runtime | `ProjectDirs.runtime_dir()`；没有 runtime dir 时回退到 `data_local_dir()/runtime` |
+| state | `ProjectDirs.state_dir()`; falls back to `data_local_dir()` when there is no state dir |
+| runtime | `ProjectDirs.runtime_dir()`; falls back to `data_local_dir()/runtime` when there is no runtime dir |
 | control | `runtime/control.sock` |
 
-这意味着 Linux 通常遵循 XDG，macOS 使用 `ProjectDirs` 提供的原生用户目录。文档不把
-`$XDG_CONFIG_HOME` 或 `$XDG_RUNTIME_DIR` 当成跨平台 interface，也不硬编码 macOS
-绝对路径。
+In practice Linux follows XDG and macOS uses the native user directories provided by `ProjectDirs`. The docs treat neither `$XDG_CONFIG_HOME` nor `$XDG_RUNTIME_DIR` as a cross-platform interface, and never hardcode macOS absolute paths.
 
-control socket path 必须符合平台 `sockaddr_un.sun_path` 长度限制：Linux 当前按
-`107` 字节检查，macOS 按 `103` 字节检查。超长路径启动失败，不回退到共享
-`/tmp`。
+The control socket path must fit the platform `sockaddr_un.sun_path` length limit: Linux is currently checked against `107` bytes, macOS against `103` bytes. An over-long path fails startup; it never falls back to a shared `/tmp`.
 
-## 配置文件
+## Config file
 
-配置是严格 TOML schema：
+The config is a strict TOML schema:
 
 ```toml
 schema_version = 1
@@ -56,46 +50,40 @@ max_per_session = 8
 max_body = "256KiB"
 ```
 
-`ConfigFile` 当前只有 `schema_version`、`webhook` 和 `approval` 三组字段；control
-socket 不写入 config，由平台默认路径或 CLI `--control-socket` 决定。未知字段、缺少
-版本、非整数版本、非法 TOML、非 loopback listener、零限制和
-`max_per_session > max_pending` 都会失败。
+`ConfigFile` currently has only three field groups: `schema_version`, `webhook`, and `approval`; the control socket is not written to the config and comes from the platform default path or the CLI `--control-socket`. Unknown fields, a missing version, a non-integer version, invalid TOML, a non-loopback listener, zero limits, and `max_per_session > max_pending` all fail.
 
-文件必须是当前用户拥有的 regular file，不能是 symlink，权限必须精确为 `0600`。
-`setup` 首次创建时原子写入；`load` 和 `serve` 只读取，不迁移或修复文件。
+The file must be a regular file owned by the current user, must not be a symlink, and must have exactly `0600` permissions. `setup` writes atomically on first creation; `load` and `serve` only read, never migrating or repairing the file.
 
-运行时值按以下顺序覆盖：
+Runtime values are overridden in this order:
 
 ```text
-显式 CLI 参数 > config.toml > 内置默认值
+explicit CLI arguments > config.toml > built-in defaults
 ```
 
-CLI override 继续执行同样的 loopback、正数和容量关系验证。
+CLI overrides go through the same loopback, positive-number, and capacity-relation validation.
 
-## 前台 daemon
+## Foreground daemon
 
-当前直接运行前台 daemon：
+Currently the daemon runs directly in the foreground:
 
 ```bash
 nono-approval serve
 ```
 
-CLI 不自动 daemonize。可以由用户放入 tmux、自己的进程管理器或仓库提供的服务示例。
-收到 `SIGINT`/`SIGTERM` 后，Broker 将 pending request 变为 denial，等待 `100ms`，
-随后停止 server task 并删除 socket。
+The CLI never daemonizes by itself. Users can put it in tmux, their own process manager, or the service examples provided in the repo. On `SIGINT`/`SIGTERM` the Broker turns pending requests into denials, waits `100ms`, then stops the server tasks and removes the socket.
 
-## 服务示例
+## Service examples
 
-仓库当前提供：
+The repository currently provides:
 
-- `examples/systemd/nono-approval.service`；
-- `examples/launchd/dev.yewfence.nono-approval.plist`。
+- `examples/systemd/nono-approval.service`;
+- `examples/launchd/dev.yewfence.nono-approval.plist`.
 
-它们是供用户调整路径、环境和启动参数的示例，不由 CLI 安装、启用、卸载或修改。
+They are examples for users to adjust paths, environment, and startup arguments. The CLI never installs, enables, disables, or modifies them.
 
-## nono profile 集成
+## nono profile integration
 
-`setup` 输出的最小片段只包含 webhook backend 和 approval defaults：
+The minimal snippet printed by `setup` contains only the webhook backend and approval defaults:
 
 ```json
 {
@@ -115,57 +103,53 @@ CLI 不自动 daemonize。可以由用户放入 tmux、自己的进程管理器�
 }
 ```
 
-如果需要隔离同 UID sandbox 对 control socket 的访问，用户还要在最终 profile 中配置
-平台对应的 Unix socket/network mediation；`setup` 不生成或强制 profile。真实行为用
-`nono-approval config validate --profile ...` 验证，详见[安全模型](security.md#profile-validation)。
+If same-UID sandbox access to the control socket must be isolated, the user still needs to configure the platform-appropriate Unix socket/network mediation in the final profile; `setup` neither generates nor enforces a profile. Actual behavior is verified with `nono-approval config validate --profile ...`, see [Security model](security.md#profile-validation).
 
-## 代码结构
+## Code layout
 
-当前仓库的主要实现文件为：
+The main implementation files of the current repository:
 
 ```text
 src/
-├── main.rs                 # 进程入口
-├── lib.rs                  # crate 导出与版本
-├── cli.rs                  # clap 命令与退出路径
-├── daemon.rs               # listener、task 和 shutdown
+├── main.rs                 # process entry
+├── lib.rs                  # crate exports and version
+├── cli.rs                  # clap commands and exit paths
+├── daemon.rs               # listeners, tasks, and shutdown
 ├── webhook.rs              # loopback HTTP ingress
 ├── control.rs              # Unix-socket HTTP control
-├── broker.rs               # pending、decision、Lease、Tombstone
-├── protocol.rs             # Wire Adapter DTO 与解析
-├── display.rs              # 安全清理、summary 和 detail
+├── broker.rs               # pending, decision, Lease, Tombstone
+├── protocol.rs             # Wire Adapter DTOs and parsing
+├── display.rs              # safe sanitization, summary, and detail
 ├── interactive.rs          # ratatui TUI
-├── config.rs               # TOML schema 和原子 setup
-├── runtime_path.rs         # ProjectDirs 与 owner-only 路径
+├── config.rs               # TOML schema and atomic setup
+├── runtime_path.rs         # ProjectDirs and owner-only paths
 ├── peer_identity.rs        # Linux/macOS peer UID
 ├── profile_validation.rs   # nono sandbox probe
 └── debug_capture.rs        # NDJSON capture
-tests/bridge.rs             # webhook/control bridge 集成测试
+tests/bridge.rs             # webhook/control bridge integration test
 ```
 
-模块间 interface 以 `Broker`、`ControlClient`、`KnownApprovalRequest`、`ProjectPaths`
-和 `DebugCapture` 为主要 seam；没有 database、web UI、plugin system 或 policy
-engine。
+The main seams between modules are `Broker`, `ControlClient`, `KnownApprovalRequest`, `ProjectPaths`, and `DebugCapture`; there is no database, web UI, plugin system, or policy engine.
 
-## 依赖与工具
+## Dependencies and tooling
 
-核心依赖按职责分组：
+Core dependencies grouped by responsibility:
 
-- Tokio：async runtime、socket、signal、timeout、oneshot；
-- Hyper/hyper-util/http-body-util：webhook 和 control HTTP；
-- Clap/clap_complete：CLI 和 completion；
-- Ratatui/crossterm：TUI；
-- directories：平台项目目录；
-- serde/serde_json/toml：wire、control 和 config DTO；
-- nix：Linux/macOS peer credential 安全封装；
-- vte、shlex、unicode-width、textwrap：终端清理、展示 quoting 和布局；
-- blake3、getrandom、tempfile、jiff：进程期哈希、随机数、原子文件和时间处理。
+- Tokio: async runtime, sockets, signals, timeouts, oneshots;
+- Hyper/hyper-util/http-body-util: webhook and control HTTP;
+- Clap/clap_complete: CLI and completion;
+- Ratatui/crossterm: TUI;
+- directories: platform project directories;
+- serde/serde_json/toml: wire, control, and config DTOs;
+- nix: safe wrappers for Linux/macOS peer credentials;
+- vte, shlex, unicode-width, textwrap: terminal sanitization, display quoting, and layout;
+- blake3, getrandom, tempfile, jiff: process-scoped hashing, randomness, atomic files, and time handling.
 
-生产依赖不包含 nono crate。
+Production dependencies contain no nono crate.
 
-## 发布现状
+## Release status
 
-仓库已有 crates.io 和 GitHub Releases 发布任务。GitHub Release 构建四个目标：
+The repository already has crates.io and GitHub Releases publishing tasks. The GitHub Release builds four targets:
 
 ```text
 x86_64-unknown-linux-gnu
@@ -174,25 +158,24 @@ x86_64-apple-darwin
 aarch64-apple-darwin
 ```
 
-每个归档由 `scripts/package-release` 生成 `.tar.gz`，包含：
+Each archive is generated by `scripts/package-release` as a `.tar.gz` containing:
 
-- `nono-approval` 二进制；
-- `README.md`；
-- `LICENSE`；
-- Linux 的 systemd service 示例，或 macOS 的 launchd agent 示例。
+- the `nono-approval` binary;
+- `README.md`;
+- `LICENSE`;
+- the systemd service example on Linux, or the launchd agent example on macOS.
 
-当前发布链没有 musl、deb/rpm、Homebrew tap 或 curl 安装脚本。
+The current release chain has no musl, deb/rpm, Homebrew tap, or curl install script.
 
-## 本地开发入口
+## Local development entry points
 
-项目使用 mise 组织可复用任务：
+The project organizes reusable tasks with mise:
 
 ```bash
-mise run check       # 仓库检查、格式、编译、lint、测试
-mise run test        # Rust 测试
-mise run docs:build  # VitePress 文档构建
-mise run build       # release 构建
+mise run check       # repository checks, formatting, build, lint, tests
+mise run test        # Rust tests
+mise run docs:build  # VitePress documentation build
+mise run build       # release build
 ```
 
-CI workflow 只负责平台和 GitHub Actions 编排，实际可移植检查由 `mise.toml` 与
-`mise.ci.toml` 任务提供。
+The CI workflow only handles platform and GitHub Actions orchestration; the actual portable checks come from the `mise.toml` and `mise.ci.toml` tasks.

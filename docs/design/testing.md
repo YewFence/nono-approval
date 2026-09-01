@@ -1,138 +1,134 @@
-# 验证现状
+# Verification Status
 
-本文记录当前仓库已经自动化验证的行为、CI 平台和仍需手动验证的风险。它不是未来实现
-计划；功能语义以对应专题文档和代码为准。
+This document records what the current repository has already verified automatically, the CI platforms, and the risks that still require manual verification. It is not a plan for future implementation; functional semantics come from the corresponding topical docs and the code.
 
-## 本地入口
+## Local entry points
 
-项目通过 mise 暴露可复用检查：
+The project exposes reusable checks through mise:
 
 ```bash
 mise run test        # cargo test --workspace --all-targets --all-features --locked
-mise run rust:check  # fmt、cargo check、clippy -D warnings
-mise run repo:check  # lockfile、newline、typos、secret 和 workflow 检查
-mise run docs:build  # VitePress 构建
-mise run check       # repo:check、rust:check、test
+mise run rust:check  # fmt, cargo check, clippy -D warnings
+mise run repo:check  # lockfile, newline, typos, secret, and workflow checks
+mise run docs:build  # VitePress build
+mise run check       # repo:check, rust:check, test
 ```
 
-## 当前单元测试
+## Current unit tests
 
-### Broker 与生命周期
+### Broker and lifecycle
 
-`src/broker.rs` 当前覆盖：
+`src/broker.rs` currently covers:
 
-- 完整 approval ID 形状，拒绝缺少前缀、短 ID 和大写 hex；
-- denial reason 的空值、全 NUL、`4 KiB` 边界和超限；
-- approve 只生效一次，完成后 `show` 返回最小 Tombstone；
-- 单调 deadline 到期返回 denial；
-- duplicate、per-session 和 global capacity。
+- the full approval ID shape, rejecting a missing prefix, short IDs, and uppercase hex;
+- empty, all-NUL, `4 KiB` boundary, and over-limit denial reasons;
+- approve taking effect exactly once, with `show` returning the minimal Tombstone after completion;
+- the monotonic deadline expiry returning a denial;
+- duplicate, per-session, and global capacity.
 
-### Wire Adapter 与 webhook
+### Wire Adapter and webhook
 
-`src/protocol.rs` 和 `src/webhook.rs` 当前覆盖：
+`src/protocol.rs` and `src/webhook.rs` currently cover:
 
-- command 的附加未知字段兼容；
-- 未知或 incomplete variant；
-- trailing JSON 和 body limit；
-- endpoint、capability、network fixture；
-- 非法 access/protocol 和空操作字段；
-- 固定 webhook path。
+- compatibility with extra unknown fields on command;
+- unknown or incomplete variants;
+- trailing JSON and the body limit;
+- endpoint, capability, and network fixtures;
+- invalid access/protocol and empty operation fields;
+- the fixed webhook path.
 
-四种 fixture 固定的是本项目当前 DTO 行为，测试依赖图没有引入 nono crate。
+The four fixtures pin the current DTO behavior of this project; the test dependency graph introduces no nono crate.
 
-### 配置与 runtime path
+### Config and runtime path
 
-`src/config.rs` 当前覆盖：
+`src/config.rs` currently covers:
 
-- `setup` 创建 `0600` 文件且幂等；
-- 未知字段和不安全文件权限失败。
+- `setup` creating a `0600` file and being idempotent;
+- unknown fields and insecure file permissions failing.
 
-`src/runtime_path.rs` 当前覆盖：
+`src/runtime_path.rs` currently covers:
 
-- owner-only 目录创建和 `0700` 权限；
-- symlink path component 拒绝；
-- 既有 permissive 目录在只读验证时拒绝。
+- owner-only directory creation and `0700` permissions;
+- symlink path component rejection;
+- existing permissive directories being rejected on read-only verification.
 
-### 展示与 TUI
+### Display and TUI
 
-`src/display.rs` 当前覆盖 ANSI/OSC 清理、C0 可见转义和 Unicode-width summary 截断。
+`src/display.rs` currently covers ANSI/OSC sanitization, visible escaping of C0 controls, and Unicode-width summary truncation.
 
-`src/interactive.rs` 当前覆盖：
+`src/interactive.rs` currently covers:
 
-- disconnect 清空客户端 request state；
-- 宽屏/窄屏基本渲染；
-- denial reason 输入态不会把 Enter 解释成 approve。
+- disconnects clearing client request state;
+- basic wide/narrow rendering;
+- the denial reason input mode never interpreting Enter as approve.
 
 ### Debug Capture
 
-`src/debug_capture.rs` 当前覆盖：
+`src/debug_capture.rs` currently covers:
 
-- 创建、列出和清理托管 capture；
-- 非托管目录条目拒绝；
-- received/completed NDJSON 及 completion reason 安全清理；
-- `response_delivery_outcome: not_observed` 序列化。
+- creating, listing, and cleaning managed captures;
+- rejection of unmanaged directory entries;
+- received/completed NDJSON and safe sanitization of completion reasons;
+- serialization of `response_delivery_outcome: not_observed`.
 
 ### CLI
 
-`src/cli.rs` 当前覆盖 partial approval ID 在 clap 解析阶段失败，以及所有公开子命令都有
-help 描述。
+`src/cli.rs` currently covers partial approval IDs failing at clap parse time, and every public subcommand having a help description.
 
-## 当前集成测试
+## Current integration tests
 
-`tests/bridge.rs` 启动真实 TCP webhook listener 和 Unix control listener，覆盖：
+`tests/bridge.rs` starts a real TCP webhook listener and a Unix control listener and covers:
 
-1. webhook request 登记为 pending；
-2. control list 找到精确 approval ID；
-3. control approve 返回 granted；
-4. 原 webhook response 收到 granted；
-5. terminal state 后第二次决定返回 conflict；
-6. 超过 `8 KiB` 的 control decision body 返回 `400` 且不决定请求。
+1. a webhook request registering as pending;
+2. control list finding the exact approval ID;
+3. control approve returning granted;
+4. the original webhook response receiving granted;
+5. a second decision after terminal state returning conflict;
+6. a control decision body over `8 KiB` returning `400` without deciding the request.
 
-该集成测试使用临时 socket path 和进程内 Broker，不启动完整 CLI 进程，也不运行 nono。
+This integration test uses a temporary socket path and an in-process Broker; it does not start a full CLI process and does not run nono.
 
 ## CI
 
-GitHub Actions 当前执行：
+GitHub Actions currently runs:
 
-- Linux 与 macOS 的 `mise run rust:check`；
-- Linux 与 macOS 的 `mise run test`；
-- Linux repository checks；
-- VitePress 文档构建；
-- 定期 Rust dependency audit；
-- release 时四目标构建、归档、crates.io publish 和 GitHub Release。
+- `mise run rust:check` on Linux and macOS;
+- `mise run test` on Linux and macOS;
+- Linux repository checks;
+- the VitePress documentation build;
+- periodic Rust dependency audit;
+- four-target builds, archiving, crates.io publishing, and the GitHub Release on release.
 
-可移植检查与打包行为由 `mise.toml`、`mise.ci.toml` 和 `scripts/package-release` 维护；
-workflow 负责事件、权限、平台 matrix、artifact 和发布编排。
+Portable checks and packaging behavior are maintained by `mise.toml`, `mise.ci.toml`, and `scripts/package-release`; the workflow handles events, permissions, the platform matrix, artifacts, and release orchestration.
 
-## 尚未自动化验证
+## Not yet verified automatically
 
-以下行为在代码或文档中存在，但当前测试集没有提供端到端证据：
+The following behaviors exist in code or docs, but the current test suite provides no end-to-end evidence:
 
-- 真实 nono `0.69` 从 command policy 发出 webhook，并在 approve/deny 后继续或拒绝操作；
-- Pi、Claude Code、Codex 全屏 TUI 中跨终端审批不争用原 TTY；
-- `config validate` 对真实 Linux Landlock 和 macOS Seatbelt profile 的可达/拒绝矩阵；
-- Profile Validation 的 timeout、invalid child protocol、session hook 提示和各 errno 分支；
-- Linux/macOS peer identity 的不同 UID socket-pair 行为和平台 API 失败路径；
-- 完整 daemon 收到 `SIGINT`/`SIGTERM` 后的 denial、100ms flush 和 socket 清理；
-- webhook 的 method、content-type、所有错误状态码和 disconnect cancellation 的网络级测试；
-- Tombstone 1024 条/10 分钟淘汰、replay TTL 和并发双决定的竞争测试；
-- Debug Capture 运行时 I/O 失败转为 failed 且审批继续；
-- 每个 ProjectDirs 平台实际路径和 socket ABI 长度边界；
-- TUI 的全部键位、500ms/1s 节奏、selection fallback、resize、panic/异常终端恢复；
-- 四个 release archive 的内容在 CI 中解包验证。
+- real nono 0.69+ sending a webhook from a command policy and continuing or rejecting the operation after approve/deny;
+- cross-terminal approval inside full-screen Pi, Claude Code, and Codex TUIs not contending for the original TTY;
+- the reachable/denied matrix of `config validate` against real Linux Landlock and macOS Seatbelt profiles;
+- Profile Validation timeouts, the invalid child protocol, the session hook disclosure, and each errno branch;
+- different-UID socket-pair behavior and platform API failure paths of Linux/macOS peer identity;
+- the full daemon's denial, 100ms flush, and socket cleanup after `SIGINT`/`SIGTERM`;
+- network-level tests of the webhook's method, content type, all error status codes, and disconnect cancellation;
+- Tombstone 1024-entry/10-minute eviction, replay TTL, and concurrent double-decision race tests;
+- Debug Capture runtime I/O failure turning into failed while approvals continue;
+- actual paths and socket ABI length boundaries for every ProjectDirs platform;
+- all TUI keybindings, the 500ms/1s cadence, selection fallback, resize, and panic/abnormal terminal restore;
+- the contents of the four release archives verified by unpacking in CI.
 
-这些条目不能在发布说明或用户文档中表述成已经通过的验收项。补充测试时应直接验证
-模块公开 interface，避免为测试另建一套旁路实现。
+These items must not be phrased in release notes or user docs as acceptance criteria that already pass. When adding tests, verify the module's public interface directly and avoid building a parallel bypass implementation just for testing.
 
-## 手动验证建议
+## Manual verification suggestions
 
-涉及真实 nono 或平台 sandbox 时，至少记录：
+When real nono or platform sandboxes are involved, record at least:
 
-1. nono 精确版本和 profile；
-2. 操作系统与架构；
-3. daemon 配置和实际 webhook/control 地址；
-4. approval ID、终态和原操作结果；
-5. 是否启用 Debug Capture；
-6. Profile Validation 是否确认 started，及最终 errno/可达结果。
+1. the exact nono version and profile;
+2. the OS and architecture;
+3. the daemon config and actual webhook/control addresses;
+4. the approval ID, terminal state, and the original operation's outcome;
+5. whether Debug Capture was enabled;
+6. whether Profile Validation confirmed started, and the final errno/reachability result.
 
-调研事实与手动实验应写入版本化 research 文档，不要混入长期协议承诺。
+Research facts and manual experiments should be written into versioned research documents, never mixed into long-term protocol commitments.
