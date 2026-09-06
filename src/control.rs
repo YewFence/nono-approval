@@ -25,6 +25,7 @@ use crate::debug_capture::DebugCapture;
 pub use crate::debug_capture::DebugCaptureStatus;
 use crate::display::MAX_DETAIL_BYTES;
 use crate::peer_identity::verify_owner;
+use crate::policy::{PolicyError, RuleAction, RuleScope};
 use crate::protocol::WebhookDecision;
 
 const MAX_CONTROL_BODY_BYTES: usize = 8 * 1024;
@@ -44,6 +45,8 @@ pub struct DaemonStatus {
     pub version: String,
     pub uptime_seconds: u64,
     pub pending: usize,
+    #[serde(default)]
+    pub session_rule_count: usize,
     pub max_pending: usize,
     pub max_per_session: usize,
     pub webhook_listen: String,
@@ -73,6 +76,21 @@ pub enum DecisionRequest {
 pub struct DecisionResponse {
     pub approval_id: ApprovalId,
     pub state: TerminalState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuleRequest {
+    pub action: RuleAction,
+    pub scope: RuleScope,
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearSessionRulesResponse {
+    pub cleared: usize,
 }
 
 #[derive(Debug, Error)]
@@ -158,6 +176,36 @@ impl ControlClient {
         .await
     }
 
+    /// Decides a pending request and remembers its capability path atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, validation, capacity, or stale-request errors.
+    pub async fn remember(
+        &self,
+        approval_id: &ApprovalId,
+        rule: &SessionRuleRequest,
+    ) -> Result<DecisionResponse, ControlClientError> {
+        self.request(
+            Method::POST,
+            &format!("/v1/approvals/{approval_id}/session-rule"),
+            Some(rule),
+        )
+        .await
+    }
+
+    /// Clears all daemon-lifetime rules without affecting pending requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport or response errors.
+    pub async fn clear_session_rules(
+        &self,
+    ) -> Result<ClearSessionRulesResponse, ControlClientError> {
+        self.request(Method::DELETE, "/v1/session-rules", None::<&()>)
+            .await
+    }
+
     async fn request<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -237,6 +285,7 @@ async fn handle(
             version: crate::VERSION.to_owned(),
             uptime_seconds: context.started_at.elapsed().as_secs(),
             pending: context.broker.pending_count().await,
+            session_rule_count: context.broker.session_rule_count().await,
             max_pending: context.max_pending,
             max_per_session: context.max_per_session,
             webhook_listen: context.webhook_listen.clone(),
@@ -252,6 +301,14 @@ async fn handle(
             StatusCode::OK,
             &ApprovalList {
                 approvals: context.broker.list().await,
+            },
+        ));
+    }
+    if method == Method::DELETE && path == "/v1/session-rules" {
+        return Ok(json_response(
+            StatusCode::OK,
+            &ClearSessionRulesResponse {
+                cleared: context.broker.clear_session_rules().await,
             },
         ));
     }
@@ -279,6 +336,9 @@ async fn handle_approval(
         .await;
     }
     if method == Method::POST {
+        if let Some(id) = remainder.strip_suffix("/session-rule") {
+            return remember_response(request, &context.broker, id).await;
+        }
         let Some(id) = remainder.strip_suffix("/decision") else {
             return empty_response(StatusCode::NOT_FOUND);
         };
@@ -316,6 +376,49 @@ async fn show_response(
             json_response(StatusCode::OK, &ApprovalView::Completed(completed))
         }
         Err(_) => error_response(StatusCode::NOT_FOUND, "approval not found"),
+    }
+}
+
+async fn remember_response(
+    request: Request<Incoming>,
+    broker: &Broker,
+    id: &str,
+) -> Response<Full<Bytes>> {
+    let Ok(approval_id) = id.parse::<ApprovalId>() else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid approval ID");
+    };
+    let Ok(body) = read_decision_body(request.into_body()).await else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid session rule body");
+    };
+    let Ok(rule) = serde_json::from_slice::<SessionRuleRequest>(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid session rule body");
+    };
+    if rule.action == RuleAction::Allow && rule.reason.is_some() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "allow rules do not accept a denial reason",
+        );
+    }
+    match broker
+        .decide_and_remember_path(
+            &approval_id,
+            rule.action,
+            rule.scope,
+            rule.path,
+            rule.reason,
+        )
+        .await
+    {
+        Ok(state) => json_response(StatusCode::OK, &DecisionResponse { approval_id, state }),
+        Err(BrokerError::NotFound) => error_response(StatusCode::NOT_FOUND, "approval not found"),
+        Err(BrokerError::NotPending) => {
+            error_response(StatusCode::CONFLICT, "approval is no longer pending")
+        }
+        Err(BrokerError::Policy(PolicyError::Capacity)) => error_response(
+            StatusCode::CONFLICT,
+            "session rule limit reached (128); clear session rules to make room",
+        ),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, &error.to_string()),
     }
 }
 

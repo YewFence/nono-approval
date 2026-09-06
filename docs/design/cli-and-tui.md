@@ -12,8 +12,9 @@ nono-approval serve [OPTIONS]
 nono-approval status
 nono-approval list [--json]
 nono-approval show <approval-id> [--debug]
-nono-approval approve <approval-id>
-nono-approval deny <approval-id> [--reason <text>]
+nono-approval approve <approval-id> [--session-path|--session-dir] [--rule-path <path>]
+nono-approval deny <approval-id> [--reason <text>] [--session-path|--session-dir] [--rule-path <path>]
+nono-approval session-rules clear
 nono-approval debug captures
 nono-approval debug clean
 nono-approval completions <bash|elvish|fish|powershell|zsh>
@@ -87,6 +88,7 @@ Example:
 ```text
 Daemon: running
 Pending: 2
+Session rules: 0
 Started: 8s ago
 Webhook: 127.0.0.1:17443
 Debug capture: enabled (/.../debug-captures/2026-...ndjson)
@@ -141,6 +143,10 @@ The command itself is the final decision; there is no second confirmation. `deny
 
 `approve` and `deny` do not support `--latest`, `--all`, operation names, or ID prefixes. Unknown, completed, expired, or already-decided requests fail, never falling back to another queue item.
 
+For a pending capability request, both approve and deny accept `--session-path` (Exact path) and `--session-dir` (Tree). Optional `--rule-path` edits the literal target and requires one scope flag; without it the source path is used. The chosen path/scope must cover the source request. These CLI commands act immediately and inherit the source's exact access, without another confirmation. The scopes are mutually exclusive, and deny's `--reason` may accompany either. Failed creation leaves the source pending unless its lease expired. See [Session Rules](session-rules.md) for precedence, limits, and cross-session scope.
+
+`session-rules clear` removes all runtime allow and deny rules without restarting the daemon or deciding pending requests. It prints `Cleared N session rule(s).` In the TUI browse view, `C` opens the equivalent confirmation, `y` clears, and `n` or Esc cancels. Both CLI `status` and the TUI footer show the rule count. Closing a TUI does not clear daemon rules.
+
 ## Debug Capture commands
 
 ```bash
@@ -182,6 +188,9 @@ k / Up          previous request
 a               approve immediately
 d               deny immediately with a fixed reason
 D               open the reason input mode
+r / p           open rule scope selector (Exact path)
+P / A           open rule scope selector (Tree)
+C               confirm clearing all daemon session rules
 q               quit the TUI
 Ctrl-c          quit the TUI
 Tab             switch queue/detail on narrow screens
@@ -191,5 +200,17 @@ g / G           detail top/bottom
 ```
 
 Enter in browse mode has no approval meaning. In reason input mode, Enter submits and Esc discards; the target approval ID is fixed while typing, and if the target completes during the next refresh, submission just shows a failure. `D` and the CLI `--reason` use the same Broker validation rules.
+
+`C clear rules` remains visible in the connected browse footer, including when the queue is empty. Confirmation replaces that footer without opening another page and explicitly covers all Allow/Deny rules in the daemon, including other clients' rules. Only a fresh, unmodified `y` press clears them; `n` or Esc cancels, Enter does nothing, and Ctrl-C exits. Other browse actions are blocked during confirmation. Modified or repeated `C` events cannot open it; in reason input, `C` remains text, and in the scope selector it has no effect. Confirmation must be fully rendered before it can execute; if it does not fit, a resize prompt appears and only cancel/exit remain available. Disconnect drops the confirmation. Success reports the actual cleared count and refreshes status; failure remains visible briefly and requires a new confirmation to retry.
+
+`r`, `p`, `P`, and `A` open a draft bound to the full selected approval ID. They ignore modified shortcuts other than Shift and explicit key-repeat events. Non-capability or unavailable sources cannot open a draft. While editing a reason, these letters remain ordinary input. Decision and rule-operation results remain visible for four seconds across polling refreshes. The queue footer reserves up to six wrapped lines on narrow terminals.
+
+## Rule selection mode
+
+The source request stays visible beside the selector on wide terminals and above it on narrow terminals. The selector owns an immutable chain from the original request path to `/`; the approval page owns the immutable source ID, availability, exact access, daemon lifetime, and submission. Queue selection is disabled while the selector is open. A source that disappears disables submission without retargeting; disconnect discards the selection.
+
+Left/`h` shortens to the parent; Right/`l` restores one component, never beyond the original path. Ancestors always use Tree scope. At the original path, Space toggles Exact path/Tree; that setting is restored after navigating back from an ancestor. There is no free-form input, focus cycle, Action field, or nested picker. Esc cancels. PageUp/Down scroll the selected path; Ctrl-Up/Down scroll source details independently. Ctrl-C exits. Contextual controls remain visible, including at 80x24 and 60 columns. Below 40x22, only cancel/exit remain enabled until resized.
+
+Only an explicit `a` (approve and remember) or `d` (deny and remember) submits; repeated action events and Enter never submit. The daemon rechecks the lease and final coverage before atomically installing the rule and deciding the source. See [Rule Scope Selector](rule-editor.md) for module contracts and the project-tree example.
 
 The TUI calls ratatui restore on normal return and in the panic hook, restoring the alternate screen, raw mode, cursor, and terminal state.

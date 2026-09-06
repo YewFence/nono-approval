@@ -16,8 +16,12 @@ use crate::broker::{
 };
 use crate::control::{
     ApprovalView, ControlClient, ControlClientError, DebugCaptureStatus, DecisionRequest,
+    SessionRuleRequest,
 };
 use crate::display::{sanitize, truncate_summary};
+use crate::policy::{RuleAction, RuleDraft, RuleScope};
+use crate::protocol::KnownApprovalRequest;
+use crate::rule_selector::{RuleSelector, SelectorEvent, display_path};
 
 const CONNECTED_POLL: Duration = Duration::from_millis(500);
 const DISCONNECTED_POLL: Duration = Duration::from_secs(1);
@@ -34,6 +38,38 @@ struct ReasonInput {
     error: Option<String>,
 }
 
+struct ApprovalRuleEditing {
+    approval_id: ApprovalId,
+    request: KnownApprovalRequest,
+    deadline: String,
+    available: bool,
+    source_scroll: u16,
+    editor: RuleSelector,
+    error: Option<String>,
+    too_small: bool,
+}
+
+impl ApprovalRuleEditing {
+    fn blocked(&self) -> Option<String> {
+        if !self.available {
+            return Some("Source request is no longer pending".to_owned());
+        }
+        self.editor
+            .draft()
+            .validate_source(&self.request)
+            .err()
+            .map(|error| error.to_string())
+            .or_else(|| self.error.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClearConfirmation {
+    Closed,
+    Hidden,
+    Visible,
+}
+
 struct App {
     client: ControlClient,
     connected: bool,
@@ -43,8 +79,12 @@ struct App {
     detail_scroll: u16,
     show_detail_panel: bool,
     reason: Option<ReasonInput>,
+    editing: Option<ApprovalRuleEditing>,
+    clear_confirmation: ClearConfirmation,
     status: String,
     debug_capture: DebugCaptureStatus,
+    session_rule_count: usize,
+    status_until: Instant,
     next_poll: Instant,
 }
 
@@ -59,8 +99,12 @@ impl App {
             detail_scroll: 0,
             show_detail_panel: false,
             reason: None,
+            editing: None,
+            clear_confirmation: ClearConfirmation::Closed,
             status: "Disconnected — waiting for daemon…".to_owned(),
             debug_capture: DebugCaptureStatus::Disabled,
+            session_rule_count: 0,
+            status_until: Instant::now(),
             next_poll: Instant::now(),
         }
     }
@@ -78,7 +122,12 @@ impl App {
         self.detail = None;
         self.detail_scroll = 0;
         self.reason = None;
-        "Disconnected — waiting for daemon…".clone_into(&mut self.status);
+        self.editing = None;
+        self.clear_confirmation = ClearConfirmation::Closed;
+        self.session_rule_count = 0;
+        if Instant::now() >= self.status_until {
+            "Disconnected — waiting for daemon…".clone_into(&mut self.status);
+        }
         self.next_poll = Instant::now() + DISCONNECTED_POLL;
     }
 
@@ -91,7 +140,14 @@ impl App {
         };
         self.connected = true;
         self.approvals = list.approvals;
-        self.selected = if self.approvals.is_empty() {
+        self.selected = if let Some(editing) = &mut self.editing {
+            let selected = self
+                .approvals
+                .iter()
+                .position(|item| item.approval_id == editing.approval_id);
+            editing.available &= selected.is_some();
+            selected
+        } else if self.approvals.is_empty() {
             None
         } else if let Some(old_id) = old_id {
             self.approvals
@@ -106,15 +162,18 @@ impl App {
             return;
         };
         self.debug_capture = status.debug_capture;
-        if self.refresh_detail().await.is_err() {
+        self.session_rule_count = status.session_rule_count;
+        if self.editing.is_none() && self.refresh_detail().await.is_err() {
             self.disconnect();
             return;
         }
-        self.status = if self.approvals.is_empty() {
-            "Waiting for approval requests…".to_owned()
-        } else {
-            "a approve · d deny · D deny with reason · q quit".to_owned()
-        };
+        if Instant::now() >= self.status_until {
+            self.status = if self.approvals.is_empty() {
+                "Waiting for approval requests…".to_owned()
+            } else {
+                "a approve · d deny · D reason · r rule · q quit".to_owned()
+            };
+        }
         self.next_poll = Instant::now() + CONNECTED_POLL;
     }
 
@@ -140,6 +199,116 @@ impl App {
             Ok(response) => format!("{}: {:?}", response.approval_id, response.state),
             Err(error) => format!("Decision failed: {error}"),
         };
+        self.next_poll = Instant::now();
+        self.status_until = Instant::now() + Duration::from_secs(4);
+    }
+
+    async fn clear_session_rules(&mut self) {
+        self.clear_confirmation = ClearConfirmation::Closed;
+        self.status = match self.client.clear_session_rules().await {
+            Ok(response) => {
+                self.session_rule_count = 0;
+                format!("Cleared {} session rule(s).", response.cleared)
+            }
+            Err(error) => format!("Clear session rules failed: {error}"),
+        };
+        self.next_poll = Instant::now();
+        self.status_until = Instant::now() + Duration::from_secs(4);
+    }
+
+    async fn open_rule_editor(&mut self, action: RuleAction, scope: RuleScope) {
+        let Some(approval_id) = self.selected_id() else {
+            return;
+        };
+        let result = self.client.show(&approval_id, true).await;
+        self.status = match result {
+            Ok(ApprovalView::Pending(detail)) => {
+                if let Some(debug) = detail.debug {
+                    match RuleDraft::from_request(&debug.wire_request, action, scope)
+                        .and_then(RuleSelector::new)
+                    {
+                        Ok(editor) => {
+                            self.editing = Some(ApprovalRuleEditing {
+                                approval_id,
+                                request: debug.wire_request,
+                                deadline: detail.deadline,
+                                available: true,
+                                source_scroll: 0,
+                                editor,
+                                error: None,
+                                too_small: false,
+                            });
+                            self.next_poll = Instant::now();
+                            return;
+                        }
+                        Err(error) => format!("Rule draft failed: {error}"),
+                    }
+                } else {
+                    "Rule draft failed: source path is unavailable".to_owned()
+                }
+            }
+            Ok(ApprovalView::Completed(_)) => "Source request is no longer pending".to_owned(),
+            Err(error) => format!("Rule draft failed: {error}"),
+        };
+        self.status_until = Instant::now() + Duration::from_secs(4);
+        self.next_poll = Instant::now();
+    }
+
+    async fn edit_rule(&mut self, key: KeyEvent) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.too_small && key.code != KeyCode::Esc {
+            return;
+        }
+        if key.modifiers == KeyModifiers::CONTROL && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            editing.source_scroll = if key.code == KeyCode::Up {
+                editing.source_scroll.saturating_sub(1)
+            } else {
+                editing.source_scroll.saturating_add(1)
+            };
+            return;
+        }
+        match editing.editor.handle_key(key) {
+            SelectorEvent::Continue => {}
+            SelectorEvent::Changed => editing.error = None,
+            SelectorEvent::Cancelled => {
+                self.editing = None;
+                self.next_poll = Instant::now();
+            }
+            SelectorEvent::Submit(draft) => {
+                editing.error = None;
+                if let Some(error) = editing.blocked() {
+                    editing.error = Some(error);
+                    return;
+                }
+                self.submit_rule(draft).await;
+            }
+        }
+    }
+
+    async fn submit_rule(&mut self, draft: RuleDraft) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let request = SessionRuleRequest {
+            action: draft.action,
+            scope: draft.scope,
+            reason: None,
+            path: Some(draft.path),
+        };
+        match self.client.remember(&editing.approval_id, &request).await {
+            Ok(_) => {
+                self.status = format!(
+                    "{}: {:?} {:?} rule remembered",
+                    editing.approval_id, draft.action, draft.scope
+                );
+                self.editing = None;
+            }
+            Err(error) => editing.error = Some(format!("Session rule failed: {error}")),
+        }
+        self.status_until = Instant::now() + Duration::from_secs(4);
         self.next_poll = Instant::now();
     }
 
@@ -188,7 +357,7 @@ async fn run_loop(
         if Instant::now() >= app.next_poll {
             app.refresh().await;
         }
-        terminal.draw(|frame| render(frame, &app))?;
+        terminal.draw(|frame| render(frame, &mut app))?;
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -200,41 +369,34 @@ async fn run_loop(
 }
 
 async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    if let Some(reason) = &mut app.reason {
-        match key.code {
-            KeyCode::Esc => app.reason = None,
-            KeyCode::Backspace => {
-                reason.value.pop();
-                reason.error = None;
-            }
-            KeyCode::Enter => {
-                if let Err(error) = validate_denial_reason(&reason.value) {
-                    reason.error = Some(error.to_string());
-                } else {
-                    let approval_id = reason.approval_id.clone();
-                    let value = reason.value.clone();
-                    app.reason = None;
-                    app.decide(approval_id, DecisionRequest::Denied { reason: value })
-                        .await;
-                }
-            }
-            KeyCode::Char(character)
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && reason.value.len() + character.len_utf8() <= 4 * 1024 =>
-            {
-                reason.value.push(character);
-                reason.error = None;
-            }
-            KeyCode::Char(_) => {
-                reason.error = Some("Reason is limited to 4 KiB".to_owned());
-            }
-            _ => {}
+    if app.clear_confirmation != ClearConfirmation::Closed {
+        return handle_clear_rules_key(app, key).await;
+    }
+    if app.editing.is_some() {
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            return true;
         }
+        app.edit_rule(key).await;
+        return false;
+    }
+    if app.reason.is_some() {
+        handle_reason_key(app, key).await;
         return false;
     }
 
+    if key.kind != KeyEventKind::Press
+        && matches!(key.code, KeyCode::Char('a' | 'd' | 'D'))
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        return false;
+    }
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        (KeyCode::Char('C'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if key.kind == KeyEventKind::Press && app.connected =>
+        {
+            app.clear_confirmation = ClearConfirmation::Hidden;
+        }
         (KeyCode::Down | KeyCode::Char('j'), _) => app.move_selection(1),
         (KeyCode::Up | KeyCode::Char('k'), _) => app.move_selection(-1),
         (KeyCode::Tab, _) => app.show_detail_panel = !app.show_detail_panel,
@@ -248,12 +410,24 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('g'), _) => app.detail_scroll = 0,
         (KeyCode::Char('G'), _) => app.detail_scroll = u16::MAX,
-        (KeyCode::Char('a'), _) => {
+        (KeyCode::Char('a'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             if let Some(approval_id) = app.selected_id() {
                 app.decide(approval_id, DecisionRequest::Granted).await;
             }
         }
-        (KeyCode::Char('d'), _) => {
+        (
+            KeyCode::Char(shortcut @ ('r' | 'p' | 'P' | 'A')),
+            KeyModifiers::NONE | KeyModifiers::SHIFT,
+        ) if key.kind == KeyEventKind::Press => {
+            let (action, scope) = match shortcut {
+                'p' => (RuleAction::Deny, RuleScope::Path),
+                'P' => (RuleAction::Deny, RuleScope::Directory),
+                'A' => (RuleAction::Allow, RuleScope::Directory),
+                _ => (RuleAction::Allow, RuleScope::Path),
+            };
+            app.open_rule_editor(action, scope).await;
+        }
+        (KeyCode::Char('d'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             if let Some(approval_id) = app.selected_id() {
                 app.decide(
                     approval_id,
@@ -264,7 +438,7 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 .await;
             }
         }
-        (KeyCode::Char('D'), _) => {
+        (KeyCode::Char('D'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             if let Some(approval_id) = app.selected_id() {
                 app.reason = Some(ReasonInput {
                     approval_id,
@@ -278,9 +452,79 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-fn render(frame: &mut Frame<'_>, app: &App) {
-    let [main, footer] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
+async fn handle_clear_rules_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.kind != KeyEventKind::Press {
+        return false;
+    }
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        (KeyCode::Char('y'), KeyModifiers::NONE)
+            if app.connected && app.clear_confirmation == ClearConfirmation::Visible =>
+        {
+            app.clear_session_rules().await;
+        }
+        (KeyCode::Esc | KeyCode::Char('n'), KeyModifiers::NONE) => {
+            app.clear_confirmation = ClearConfirmation::Closed;
+        }
+        _ => {}
+    }
+    false
+}
+
+async fn handle_reason_key(app: &mut App, key: KeyEvent) {
+    let Some(reason) = &mut app.reason else {
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => app.reason = None,
+        KeyCode::Backspace => {
+            reason.value.pop();
+            reason.error = None;
+        }
+        KeyCode::Enter => {
+            if let Err(error) = validate_denial_reason(&reason.value) {
+                reason.error = Some(error.to_string());
+            } else {
+                let approval_id = reason.approval_id.clone();
+                let value = reason.value.clone();
+                app.reason = None;
+                app.decide(approval_id, DecisionRequest::Denied { reason: value })
+                    .await;
+            }
+        }
+        KeyCode::Char(character)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && reason.value.len() + character.len_utf8() <= 4 * 1024 =>
+        {
+            reason.value.push(character);
+            reason.error = None;
+        }
+        KeyCode::Char(_) => {
+            reason.error = Some("Reason is limited to 4 KiB".to_owned());
+        }
+        _ => {}
+    }
+}
+
+fn render(frame: &mut Frame<'_>, app: &mut App) {
+    if let Some(editing) = &mut app.editing {
+        render_rule_editing(frame, editing, app.session_rule_count, &app.debug_capture);
+        return;
+    }
+    let message = footer_message(app);
+    let lines = textwrap::wrap(&message, usize::from(frame.area().width.max(1))).len();
+    let footer_height = u16::try_from(lines.clamp(2, 6))
+        .unwrap_or(6)
+        .min(frame.area().height.saturating_sub(3));
+    let [main, footer] = Layout::vertical([Constraint::Min(3), Constraint::Length(footer_height)])
+        .areas(frame.area());
+    if app.clear_confirmation != ClearConfirmation::Closed {
+        app.clear_confirmation = if lines <= usize::from(footer.height) {
+            ClearConfirmation::Visible
+        } else {
+            ClearConfirmation::Hidden
+        };
+    }
     if main.width >= 90 {
         let [queue, detail] =
             Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
@@ -293,6 +537,76 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         render_queue(frame, app, main);
     }
     render_footer(frame, app, footer);
+}
+
+fn render_rule_editing(
+    frame: &mut Frame<'_>,
+    editing: &mut ApprovalRuleEditing,
+    rule_count: usize,
+    capture: &DebugCaptureStatus,
+) {
+    editing.too_small = frame.area().width < 40 || frame.area().height < 22;
+    if editing.too_small {
+        frame.render_widget(
+            Paragraph::new("Terminal too small: need 40x22\nEsc back | Ctrl-C quit")
+                .wrap(Wrap { trim: false }),
+            frame.area(),
+        );
+        return;
+    }
+    let footer_text = format!(
+        "Lifetime: daemon run | session rules: {rule_count} | Lease: {}{} | Ctrl-Up/Down source | Ctrl-C quit",
+        lease_remaining(&editing.deadline),
+        capture_indicator(capture)
+    );
+    let footer_height = u16::try_from(
+        textwrap::wrap(&footer_text, usize::from(frame.area().width.max(1)))
+            .len()
+            .clamp(2, 4),
+    )
+    .unwrap_or(4);
+    let [main, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(footer_height)])
+        .areas(frame.area());
+    let [source, form] = if main.width >= 90 {
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(main)
+    } else {
+        Layout::vertical([
+            Constraint::Length((main.height / 4).clamp(3, 6)),
+            Constraint::Min(0),
+        ])
+        .areas(main)
+    };
+    let mut lines = vec![Line::from(editing.approval_id.to_string())];
+    if let KnownApprovalRequest::Capability {
+        path,
+        access,
+        reason,
+        ..
+    } = &editing.request
+    {
+        lines.push(Line::from(format!("Access: {access}")));
+        lines.push(Line::from(display_path(path)));
+        if let Some(reason) = reason {
+            lines.push(Line::from(format!("Reason: {}", sanitize(reason))));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((editing.source_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Source request "),
+            ),
+        source,
+    );
+    let blocked = editing.blocked();
+    editing.editor.render(frame, form, blocked.as_deref());
+    frame.render_widget(
+        Paragraph::new(footer_text).wrap(Wrap { trim: false }),
+        footer,
+    );
 }
 
 fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -364,15 +678,35 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let message = app.reason.as_ref().map_or_else(
+fn capture_indicator(capture: &DebugCaptureStatus) -> &'static str {
+    match capture {
+        DebugCaptureStatus::Failed { .. } => " · debug capture: failed",
+        DebugCaptureStatus::Enabled { .. } => " · debug capture: enabled",
+        DebugCaptureStatus::Disabled => "",
+    }
+}
+
+fn footer_message(app: &App) -> String {
+    if app.clear_confirmation != ClearConfirmation::Closed {
+        return format!(
+            "Clear ALL {} allow/deny rules in this daemon (all clients)? Pending requests unchanged. y confirm | n/Esc cancel | Ctrl-C quit",
+            app.session_rule_count
+        );
+    }
+    app.reason.as_ref().map_or_else(
         || {
-            let capture = match &app.debug_capture {
-                DebugCaptureStatus::Failed { .. } => " · debug capture: failed",
-                DebugCaptureStatus::Enabled { .. } => " · debug capture: enabled",
-                DebugCaptureStatus::Disabled => "",
+            let capture = capture_indicator(&app.debug_capture);
+            let clear_hint = if app.connected {
+                "C clear rules | "
+            } else {
+                ""
             };
-            format!("{}{}", sanitize(&app.status), capture)
+            format!(
+                "{clear_hint}{} · session rules: {}{}",
+                sanitize(&app.status),
+                app.session_rule_count,
+                capture
+            )
         },
         |reason| {
             reason.error.as_ref().map_or_else(
@@ -380,7 +714,19 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 |error| format!("Deny reason: {} · {error}", sanitize(&reason.value)),
             )
         },
-    );
+    )
+}
+
+fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.clear_confirmation == ClearConfirmation::Hidden {
+        frame.render_widget(
+            Paragraph::new("Resize to confirm. n/Esc cancel | Ctrl-C quit")
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let message = footer_message(app);
     frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), area);
 }
 
@@ -400,8 +746,9 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::{App, ReasonInput, handle_key, render};
+    use super::{App, ClearConfirmation, ReasonInput, handle_key, render};
     use crate::broker::{ApprovalId, ApprovalSummary};
+    use crate::policy::RuleScope;
 
     fn approval() -> ApprovalSummary {
         ApprovalSummary {
@@ -413,10 +760,54 @@ mod tests {
         }
     }
 
+    fn test_server(
+        broker: &crate::broker::Broker,
+        socket: &Path,
+    ) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        tokio::spawn(crate::control::serve(
+            tokio::net::UnixListener::bind(socket).unwrap(),
+            crate::control::ControlContext {
+                broker: broker.clone(),
+                started_at: std::time::Instant::now(),
+                webhook_listen: "127.0.0.1:0".to_owned(),
+                max_pending: 64,
+                max_per_session: 8,
+                debug_capture: None,
+            },
+        ))
+    }
+
+    fn capability(id: &str, path: &str) -> crate::protocol::IncomingApproval {
+        let value = serde_json::json!({"backend":"test", "request": {
+            "capability_type":"capability", "request_id":id, "session_id":"tui",
+            "child_pid":1, "path":path, "access":"Read"
+        }});
+        crate::protocol::parse_default_webhook_body(&serde_json::to_vec(&value).unwrap()).unwrap()
+    }
+
+    async fn keys(app: &mut App, codes: &[KeyCode]) {
+        for code in codes {
+            handle_key(app, KeyEvent::new(*code, KeyModifiers::NONE)).await;
+        }
+    }
+
+    fn rendered(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
     #[test]
     fn disconnect_clears_all_request_state() {
         let mut app = App::new(Path::new("/tmp/unreachable-control.sock"));
         app.connected = true;
+        app.session_rule_count = 3;
         app.approvals.push(approval());
         app.selected = Some(0);
         app.detail_scroll = 42;
@@ -426,13 +817,236 @@ mod tests {
             value: "draft".to_owned(),
             error: None,
         });
+        app.clear_confirmation = ClearConfirmation::Visible;
         app.disconnect();
         assert!(!app.connected);
+        assert_eq!(app.session_rule_count, 0);
         assert!(app.approvals.is_empty());
         assert!(app.detail.is_none());
         assert_eq!(app.detail_scroll, 0);
         assert!(app.selected.is_none());
         assert!(app.reason.is_none());
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+    }
+
+    #[tokio::test]
+    async fn clear_rules_requires_confirmation_and_preserves_pending_requests() {
+        use crate::broker::{Broker, BrokerConfig};
+        use crate::control::{ControlClient, SessionRuleRequest};
+        use crate::policy::RuleAction;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let client = ControlClient::new(&socket);
+        for (id, action) in [("allow", RuleAction::Allow), ("deny", RuleAction::Deny)] {
+            let source = broker
+                .submit(capability(id, &format!("/{id}")))
+                .await
+                .unwrap();
+            client
+                .remember(
+                    &source.approval_id,
+                    &SessionRuleRequest {
+                        action,
+                        scope: RuleScope::Path,
+                        reason: None,
+                        path: None,
+                    },
+                )
+                .await
+                .unwrap();
+            source.wait().await;
+        }
+        let pending = broker
+            .submit(capability("pending", "/pending"))
+            .await
+            .unwrap();
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        let original_id = app.selected_id();
+        let original_deadline = app.detail.as_ref().unwrap().deadline.clone();
+        assert_eq!(app.session_rule_count, 2);
+        assert!(rendered(&mut app, 60, 24).contains("C clear rules"));
+
+        for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+            keys(&mut app, &[KeyCode::Char('C')]).await;
+            app.refresh().await;
+            assert_ne!(app.clear_confirmation, ClearConfirmation::Closed);
+            assert!(rendered(&mut app, 60, 24).contains("Clear ALL 2"));
+            keys(
+                &mut app,
+                &[
+                    KeyCode::Enter,
+                    KeyCode::Char('a'),
+                    KeyCode::Char('d'),
+                    KeyCode::Char('D'),
+                    KeyCode::Char('r'),
+                    KeyCode::Down,
+                    KeyCode::Tab,
+                ],
+            )
+            .await;
+            assert_eq!(app.selected_id(), original_id);
+            assert!(app.reason.is_none());
+            assert!(app.editing.is_none());
+            assert_eq!(broker.session_rule_count().await, 2);
+            keys(&mut app, &[cancel]).await;
+            assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        }
+        keys(&mut app, &[KeyCode::Char('C'), KeyCode::Char('y')]).await;
+        assert_eq!(broker.session_rule_count().await, 2); // Not drawn yet.
+        assert!(rendered(&mut app, 60, 24).contains("y confirm"));
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+        ] {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char('y'), modifiers)).await;
+        }
+        for kind in [
+            crossterm::event::KeyEventKind::Repeat,
+            crossterm::event::KeyEventKind::Release,
+        ] {
+            handle_key(
+                &mut app,
+                KeyEvent::new_with_kind(KeyCode::Char('y'), KeyModifiers::NONE, kind),
+            )
+            .await;
+        }
+        assert_eq!(broker.session_rule_count().await, 2);
+        keys(&mut app, &[KeyCode::Char('y')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        assert_eq!(app.session_rule_count, 0);
+        assert_eq!(broker.session_rule_count().await, 0);
+        assert_eq!(broker.pending_count().await, 1);
+        app.refresh().await;
+        assert_eq!(app.selected_id(), Some(pending.approval_id.clone()));
+        assert_eq!(app.detail.as_ref().unwrap().deadline, original_deadline);
+        assert_eq!(app.status, "Cleared 2 session rule(s).");
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn clear_rules_works_with_an_empty_queue_and_no_rules() {
+        use crate::broker::{Broker, BrokerConfig};
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        assert!(app.approvals.is_empty());
+        keys(&mut app, &[KeyCode::Char('C')]).await;
+        assert!(rendered(&mut app, 60, 24).contains("Clear ALL 0"));
+        keys(&mut app, &[KeyCode::Char('y')]).await;
+        app.refresh().await;
+        assert_eq!(app.status, "Cleared 0 session rule(s).");
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        assert_eq!(broker.pending_count().await, 0);
+        assert_eq!(broker.session_rule_count().await, 0);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn clear_prompt_is_visible_without_pending_requests_and_safe_when_too_small() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut app = App::new(&temporary.path().join("missing.sock"));
+        keys(&mut app, &[KeyCode::Char('C')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        app.connected = true;
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+        ] {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char('C'), modifiers)).await;
+        }
+        for kind in [
+            crossterm::event::KeyEventKind::Repeat,
+            crossterm::event::KeyEventKind::Release,
+        ] {
+            handle_key(
+                &mut app,
+                KeyEvent::new_with_kind(KeyCode::Char('C'), KeyModifiers::SHIFT, kind),
+            )
+            .await;
+        }
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        assert!(rendered(&mut app, 60, 24).contains("C clear rules"));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT),
+        )
+        .await;
+        for (width, height) in [(120, 30), (80, 24), (60, 24), (36, 12)] {
+            let text = rendered(&mut app, width, height);
+            assert_eq!(app.clear_confirmation, ClearConfirmation::Visible);
+            for expected in [
+                "Clear ALL 0",
+                "allow/deny",
+                "daemon",
+                "all clients",
+                "Pending",
+                "unchanged",
+                "y confirm",
+                "n/Esc cancel",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected} at {width}x{height}"
+                );
+            }
+        }
+        assert!(rendered(&mut app, 40, 5).contains("Resize to confirm"));
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Hidden);
+        keys(&mut app, &[KeyCode::Char('y')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Hidden);
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            )
+            .await
+        );
+        keys(&mut app, &[KeyCode::Esc]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        app.reason = Some(ReasonInput {
+            approval_id: "appr_0123456789abcdef".parse().unwrap(),
+            value: String::new(),
+            error: None,
+        });
+        keys(&mut app, &[KeyCode::Char('C')]).await;
+        assert_eq!(app.reason.as_ref().unwrap().value, "C");
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+    }
+
+    #[tokio::test]
+    async fn clear_failure_is_reported_and_disconnect_cancels_confirmation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut app = App::new(&temporary.path().join("missing.sock"));
+        app.connected = true;
+        app.session_rule_count = 3;
+        keys(&mut app, &[KeyCode::Char('C')]).await;
+        rendered(&mut app, 60, 24);
+        keys(&mut app, &[KeyCode::Char('y')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        assert_eq!(app.session_rule_count, 3);
+        assert!(app.status.starts_with("Clear session rules failed:"));
+        app.refresh().await;
+        assert!(!app.connected);
+        assert!(app.status.starts_with("Clear session rules failed:"));
+        app.connected = true;
+        keys(&mut app, &[KeyCode::Char('C')]).await;
+        rendered(&mut app, 60, 24);
+        app.refresh().await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        app.connected = true;
+        keys(&mut app, &[KeyCode::Char('y')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
     }
 
     #[test]
@@ -444,7 +1058,7 @@ mod tests {
             app.connected = true;
             app.approvals.push(approval());
             app.selected = Some(0);
-            terminal.draw(|frame| render(frame, &app)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
             let rendered = terminal
                 .backend()
                 .buffer()
@@ -473,5 +1087,308 @@ mod tests {
         });
         assert!(!handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await);
         assert!(app.reason.as_ref().unwrap().error.is_some());
+    }
+
+    #[tokio::test]
+    async fn rule_shortcuts_open_drafts_and_require_explicit_submission() {
+        use crate::broker::{Broker, BrokerConfig, IngressOutcome};
+        use crate::protocol::{WebhookDecision, parse_default_webhook_body};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        for key in ['p', 'P', 'A', 'r'] {
+            let value = serde_json::json!({"backend":"test", "request": {
+                "capability_type":"capability", "request_id":key.to_string(), "session_id":"tui",
+                "child_pid":1, "path":"/work", "access":"Read"
+            }});
+            let incoming =
+                || parse_default_webhook_body(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let submission = broker.submit(incoming()).await.unwrap();
+            let mut app = App::new(&socket);
+            app.refresh().await;
+            assert_eq!(app.selected_id(), Some(submission.approval_id.clone()));
+            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char(key), modifiers)).await;
+            }
+            handle_key(
+                &mut app,
+                KeyEvent::new_with_kind(
+                    KeyCode::Char(key),
+                    KeyModifiers::NONE,
+                    crossterm::event::KeyEventKind::Repeat,
+                ),
+            )
+            .await;
+            assert_eq!(broker.session_rule_count().await, 0);
+            assert_eq!(broker.pending_count().await, 1);
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+            )
+            .await;
+            assert!(app.editing.is_some());
+            assert_eq!(broker.pending_count().await, 1);
+            assert_eq!(broker.session_rule_count().await, 0);
+            // Former form controls must never submit a rule.
+            for code in [KeyCode::Enter, KeyCode::Tab, KeyCode::Tab] {
+                handle_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE)).await;
+            }
+            assert_eq!(broker.session_rule_count().await, 0);
+            for width in [40, 60, 80, 100] {
+                let rendered = rendered(&mut app, width, 30);
+                assert!(rendered.contains("Rule scope"));
+                assert!(rendered.contains("Source request"));
+                assert!(rendered.contains("remember"));
+            }
+            let action = if key == 'A' || key == 'r' { 'a' } else { 'd' };
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(action), KeyModifiers::NONE),
+            )
+            .await;
+            assert!(app.editing.is_none());
+            let decision = submission.wait().await;
+            assert_eq!(
+                decision == WebhookDecision::Granted,
+                key == 'A' || key == 'r'
+            );
+            app.refresh().await;
+            assert_eq!(app.session_rule_count, 1);
+            assert!(app.status.contains("remembered"));
+            assert!(matches!(
+                broker.ingress(incoming()).await.unwrap(),
+                IngressOutcome::Automatic(_)
+            ));
+            for width in [36, 100] {
+                let rendered = rendered(&mut app, width, 14);
+                assert!(rendered.contains("rules:"));
+            }
+            assert_eq!(app.client.clear_session_rules().await.unwrap().cleared, 1);
+        }
+        let command = parse_default_webhook_body(br#"{"backend":"x","request":{"capability_type":"command","request_id":"c","session_id":"s","command":"date","args":[],"caller":"test","intercept_rule":"test","child_pid":1}}"#).unwrap();
+        let submission = broker.submit(command).await.unwrap();
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+        )
+        .await;
+        app.refresh().await;
+        assert!(app.status.contains("capability request"));
+        assert_eq!(app.session_rule_count, 0);
+        assert_eq!(app.selected_id(), Some(submission.approval_id.clone()));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn file_request_can_create_project_tree_rule_without_mutating_source() {
+        use crate::broker::{Broker, BrokerConfig, IngressOutcome};
+        use crate::protocol::WebhookDecision;
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let submission = broker
+            .submit(capability("source", "/path/to/project/src/main.rs"))
+            .await
+            .unwrap();
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        keys(
+            &mut app,
+            &[KeyCode::Char('r'), KeyCode::Left, KeyCode::Char('h')],
+        )
+        .await;
+        assert_eq!(
+            app.editing.as_ref().unwrap().editor.draft().path,
+            "/path/to/project"
+        );
+        assert_eq!(
+            app.editing.as_ref().unwrap().editor.draft().scope,
+            RuleScope::Directory
+        );
+        assert!(app.editing.as_ref().unwrap().blocked().is_none());
+        // A local wall-clock countdown is not the daemon's monotonic approval lease.
+        app.editing.as_mut().unwrap().deadline = "1970-01-01T00:00:00Z".to_owned();
+        assert!(app.editing.as_ref().unwrap().blocked().is_none());
+        app.debug_capture = crate::control::DebugCaptureStatus::Failed {
+            error_category: "io:Other".to_owned(),
+        };
+        for width in [40, 60, 80, 100] {
+            let text = rendered(&mut app, width, 30);
+            assert!(text.contains("Rule scope"));
+            assert!(text.contains("a approve + remember"));
+            assert!(text.contains("capture: failed"));
+        }
+        assert_eq!(
+            app.editing.as_ref().unwrap().request,
+            capability("source", "/path/to/project/src/main.rs").request
+        );
+        keys(&mut app, &[KeyCode::Char('a')]).await;
+        assert_eq!(submission.wait().await, WebhookDecision::Granted);
+        assert!(matches!(
+            broker
+                .ingress(capability("sibling", "/path/to/project/tests/test.rs"))
+                .await
+                .unwrap(),
+            IngressOutcome::Automatic(WebhookDecision::Granted)
+        ));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn selector_resize_keeps_controls_visible_and_blocks_hidden_decisions() {
+        use crate::broker::{Broker, BrokerConfig};
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let submission = broker
+            .submit(capability("source", "/work/main.rs"))
+            .await
+            .unwrap();
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        keys(&mut app, &[KeyCode::Char('r')]).await;
+        for (width, height) in [(120, 30), (80, 24), (60, 24), (40, 22)] {
+            let text = rendered(&mut app, width, height);
+            for expected in [
+                "/work/main.rs",
+                "Exact path",
+                "Left/h",
+                "Right/l",
+                "Esc back",
+                "a approve",
+                "d deny",
+                "Space",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected} at {width}x{height}"
+                );
+            }
+            keys(&mut app, &[KeyCode::Left, KeyCode::Left]).await;
+            let text = rendered(&mut app, width, height);
+            assert!(
+                text.contains("Warning: all absolute paths"),
+                "root warning at {width}x{height}"
+            );
+            keys(&mut app, &[KeyCode::Right, KeyCode::Right]).await;
+        }
+        for (width, height) in [(39, 24), (80, 21)] {
+            assert!(rendered(&mut app, width, height).contains("need 40x22"));
+            keys(
+                &mut app,
+                &[KeyCode::Char('a'), KeyCode::Char('d'), KeyCode::Left],
+            )
+            .await;
+            assert_eq!(broker.session_rule_count().await, 0);
+            assert_eq!(broker.pending_count().await, 1);
+            assert_eq!(
+                app.editing.as_ref().unwrap().editor.draft().path,
+                "/work/main.rs"
+            );
+        }
+        assert!(rendered(&mut app, 60, 24).contains("a approve"));
+        // A transient submission error must not prevent an explicit retry.
+        app.editing.as_mut().unwrap().error =
+            Some("Session rule failed: transient error".to_owned());
+        keys(&mut app, &[KeyCode::Char('d')]).await;
+        assert!(app.editing.is_none());
+        assert_eq!(broker.session_rule_count().await, 1);
+        assert!(matches!(
+            submission.wait().await,
+            crate::protocol::WebhookDecision::Denied { .. }
+        ));
+        let next = broker
+            .submit(capability("next", "/other/path"))
+            .await
+            .unwrap();
+        app.refresh().await;
+        for action in ['a', 'd', 'D'] {
+            handle_key(
+                &mut app,
+                KeyEvent::new_with_kind(
+                    KeyCode::Char(action),
+                    KeyModifiers::NONE,
+                    crossterm::event::KeyEventKind::Repeat,
+                ),
+            )
+            .await;
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(action), KeyModifiers::ALT),
+            )
+            .await;
+        }
+        assert_eq!(app.selected_id(), Some(next.approval_id.clone()));
+        assert_eq!(broker.pending_count().await, 1);
+        assert!(app.reason.is_none());
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn draft_is_cancelable_and_never_rebinds_when_source_disappears() {
+        use crate::broker::{Broker, BrokerConfig, ShowApproval};
+        use crate::protocol::WebhookDecision;
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let source = broker
+            .submit(capability("source", "/work/\u{1b}[31m/main.rs"))
+            .await
+            .unwrap();
+        let mut app = App::new(&socket);
+        app.refresh().await;
+        keys(&mut app, &[KeyCode::Char('r'), KeyCode::Char('C')]).await;
+        assert_eq!(app.clear_confirmation, ClearConfirmation::Closed);
+        assert_eq!(
+            app.editing.as_ref().unwrap().editor.draft().path,
+            "/work/\u{1b}[31m/main.rs"
+        );
+        keys(&mut app, &[KeyCode::Esc]).await;
+        assert!(app.editing.is_none());
+        assert_eq!(broker.session_rule_count().await, 0);
+        keys(&mut app, &[KeyCode::Char('r')]).await;
+        let next = broker
+            .submit(capability("next", "/work/other.rs"))
+            .await
+            .unwrap();
+        broker
+            .decide(&source.approval_id, WebhookDecision::Granted)
+            .await
+            .unwrap();
+        source.wait().await;
+        app.refresh().await;
+        assert_eq!(app.selected_id(), None);
+        assert!(!app.editing.as_ref().unwrap().available);
+        keys(&mut app, &[KeyCode::Char('a'), KeyCode::Char('d')]).await;
+        assert!(
+            app.editing
+                .as_ref()
+                .unwrap()
+                .blocked()
+                .unwrap()
+                .contains("no longer pending")
+        );
+        assert_eq!(broker.session_rule_count().await, 0);
+        assert!(matches!(
+            broker.show(&next.approval_id).await.unwrap(),
+            ShowApproval::Pending(_)
+        ));
+        app.disconnect();
+        assert!(app.editing.is_none());
+        app.refresh().await;
+        assert!(app.editing.is_none());
+        assert_eq!(app.selected_id(), Some(next.approval_id.clone()));
+        server.abort();
+        let _ = server.await;
     }
 }

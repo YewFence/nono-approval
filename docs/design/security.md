@@ -16,14 +16,18 @@ nono-approval daemon
     └── never executes the requested operation itself
 ```
 
-The daemon never judges whether an operation is safe, never overrides nono's deny, protected roots, or platform sandbox constraints, and only provides a one-shot human decision.
+The daemon never judges whether an operation is safe and never overrides nono's deny, protected roots, or platform sandbox constraints. Ordinary decisions remain one-shot; explicitly remembered Session Rules automatically repeat a path/access decision until cleared or the daemon restarts.
 
 ## Webhook and Control separation
 
 - webhook ingress: fixed loopback TCP endpoint `/v1/webhooks/approval`;
 - control: owner-only Unix socket; no TCP management port is opened.
 
-The loopback webhook has no peer UID and does not authenticate callers. Any local process can submit forged requests, spam the approval interface, or consume pending capacity; the daemon never executes the operation in a request, and approval is returned only to that exact webhook connection, so a forged request can never be used to approve or execute another real operation. This ingress risk is accepted as a local fail-closed availability constraint; only the control socket uses OS peer credentials to isolate other users.
+The loopback webhook has no peer UID and does not authenticate callers. Any local process can submit forged requests, spam the approval interface, or consume pending capacity. The daemon never executes the operation in a request, and a one-shot approval is returned only to that exact webhook connection. Only the control socket uses OS peer credentials to isolate other users; the user must not infer authenticated provenance from a request appearing in the queue.
+
+Session Rule creation raises the consequence of trusting a forged request: a human who remembers it can create a daemon-wide rule that affects later genuine requests. The webhook cannot create or clear rules itself; those operations require the owner-authenticated control interface and a still-pending full approval ID. An allow rule trusts the requested path and exact access, not filesystem identity or independently authenticated provenance. Do not treat this shortcut as a sandbox enforcement layer.
+
+Editing a rule permits an explicit ancestor-tree grant; it never selects a parent or detects a project root automatically. Client-side previews are advisory: the daemon validates path syntax and source coverage under the same lock as the source decision, and inherits access itself. The TUI keeps a fixed source ID while editing and drops drafts on disconnect. Draft submission cannot become an unbound rule insertion after expiry or completion.
 
 ## Control Socket
 
@@ -94,10 +98,12 @@ Validation installs no after hook and never relies on hooks as a safety guarante
 - webhook body defaults to `256 KiB`, global pending to `64`, per-session pending to `8`, and output has hard limits too;
 - an oversized body is rejected with `413` before parsing; the content never enters pending, logs, or Debug Capture;
 - a full per-session queue returns `429`, a full global queue returns `503`; capacity rejections never evict existing requests and never enter Debug Capture;
-- duplicate `(session_id, request_id)` combinations are rejected;
+- duplicate `(session_id, request_id)` combinations are rejected on the unmatched pending path;
 - a short-lived replay cache is kept after completion;
 - webhook ingress itself grants no control authority; whether a same-UID local process can additionally reach the control socket remains a deployment-side sandbox concern;
 - non-loopback binds are rejected by default.
+
+Session Rule hits still pass HTTP/body/wire/detail validation but bypass pending capacity and replay checks, producing no approval ID or Tombstone. Rules are capped at 128 entries with a 4096-byte path limit; repeated additions replace the same path/scope/access key. Ordinary registration, rule evaluation, remember-and-decide, and clear are serialized under the Broker lock. Rule hits can generate logs and Debug Capture even while pending capacity is full; those diagnostics are not a rate limiter.
 
 ## Config parsing
 
@@ -122,6 +128,8 @@ An over-limit detail must reject the whole request at ingress; it must never be 
 
 The user-entered denial reason is also an untrusted boundary input: it must be non-empty UTF-8, must not consist entirely of NUL characters, and must be at most `4 KiB` after encoding; a reason with embedded NULs is currently allowed into the Broker. Reasons go through the same safe-escaping rules in terminal output and Debug Capture, and a validation failure must never be truncated and submitted anyway.
 
+The rule selector retains original UTF-8 path data separately from display and limits choices to the original path and its ancestors. It uses visible lossless escaping for control characters and backslashes, never deriving a path from ANSI-stripped fields. There is no text input, escape decoding, environment expansion, or glob interpretation. Opening the selector fetches the known capability DTO through owner-authenticated `show?debug=true`; it does not expose raw request JSON or unknown fields. The source snapshot and selection are ephemeral and disappear when the selector closes or disconnects.
+
 ## Plaintext display boundary
 
 The MVP does not automatically redact tokens, passwords, signed URLs, or user content. The approver needs to see the complete known operation nono actually requested approval for; heuristic redaction can hide critical differences.
@@ -132,8 +140,9 @@ Normal-mode boundary:
 - control detail JSON contains `source_kind`, and the main CLI/TUI view renders only the operation and necessary rule context;
 - plaintext always goes through terminal safe escaping;
 - raw JSON and unknown extra fields never enter ordinary or debug views;
-- request details are never written to ordinary logs or disk;
-- details are destroyed immediately after terminal state, keeping only the Tombstone.
+- full request details are not written to ordinary logs or disk without Debug Capture;
+- details are destroyed immediately after terminal state, keeping the Tombstone and any explicitly remembered normalized path/access rule;
+- rule paths remain in daemon memory until clear/restart, and rule-hit logs contain the sanitized rule path.
 
 ## Provenance model
 
@@ -161,7 +170,7 @@ Default logs only record:
 - wait duration;
 - error category.
 
-Full args, path, URL, raw JSON, or denial reasons are never logged by default. nono itself owns the real security audit; daemon logs are for operational diagnostics only.
+Full args, URLs, raw JSON, and denial reasons are not logged by default. Explicit Session Rules are a path-logging exception: hits log action, scope, exact access, the sanitized rule path, and a short session ID; clearing logs the count removed. These logs may be persisted by the service manager independently of daemon memory. nono itself owns the real security audit; daemon logs are for operational diagnostics only.
 
 ## Debug Capture
 
@@ -181,12 +190,15 @@ On a process crash, previously complete lines parse independently; readers ignor
 
 ### Record types
 
-Only two event kinds are written:
+Three event kinds are written:
 
 - `request_received`: the complete known Wire DTO, existing provenance information, and the daemon's local deadline;
 - `request_completed`: approval ID, terminal state, decision source, optional denial reason, wait duration, and the webhook response delivery outcome.
+- `policy_decision`: the known Wire DTO, claimed backend, matched Session Rule (path/scope/access/action), returned decision, `decision_source: session_rule`, and `response_delivery_outcome: not_observed`. It has no approval ID because the request never entered pending.
 
 Completion records never repeat the Wire DTO; they link to the received record via the approval ID. Control API polling, list/show, TUI selection and scrolling, and countdown redraws never enter the capture file.
+
+The source request used to install a rule still has ordinary received/completed events; its completion uses `decision_source: control_session_rule`. New `policy_decision` records retain `schema_version: 1` and do not change the existing two event shapes. Consumers should dispatch by event name and tolerate future event kinds.
 
 ### Provenance fields
 

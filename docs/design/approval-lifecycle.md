@@ -4,7 +4,7 @@ This document describes the approval ID, in-memory state, Approval Lease, Tombst
 
 ## One-shot decision
 
-Every valid webhook ingress creates an independent pending request. The Broker only accepts two human decisions:
+Every valid webhook ingress not matched by a Session Rule creates an independent pending request. Ordinary human decisions are:
 
 ```text
 Approve exactly this request once
@@ -35,6 +35,7 @@ The Broker uses one state guarded by a `tokio::sync::Mutex`:
 pending:    approval ID -> PendingApproval
 replay:     (session ID, request ID) -> expiration Instant
 tombstones: completion order -> Tombstone
+session_rules: normalized path / scope / access -> action (up to 128)
 ```
 
 The lock only covers synchronous state checks and transitions and is never held across `.await`. Each pending request has its own oneshot; the webhook handler waits for the decision or Lease expiry via `Submission::wait`.
@@ -61,6 +62,8 @@ Received ──> Pending
 ```
 
 The implementation keeps no repeatable-transition state field on the pending object; upon reaching a terminal state it removes the object from the pending map, sends the oneshot decision at most once, and creates a Tombstone. Terminal state can therefore never transition again.
+
+Explicit remember-and-decide checks the lease and derives a capability rule before completing the source request, all under the same lock. Its completion source is `control_session_rule`. Failures leave both the rule store and source request unchanged, except that elapsed leases are expired normally. Other pending requests are not retroactively matched. Subsequent rule hits skip this pending lifecycle entirely; see [Session Rules](session-rules.md).
 
 Decision source and denial reason per terminal state:
 
@@ -105,7 +108,7 @@ Request body and display detail size limits belong to the Wire Adapter, see [Pro
 
 ## Tombstone and detail lifecycle
 
-When a request reaches any terminal state, the PendingApproval is removed from the map and the Wire DTO, raw JSON, display detail, and raw identifiers are destroyed. Normal mode never persists these fields.
+When a request reaches any terminal state, the PendingApproval is removed from the map and the Wire DTO, raw JSON, display detail, and raw identifiers are destroyed. An explicitly remembered rule separately retains its normalized path, scope, access, and action until clear/restart; rule hits log the sanitized rule path. Full Wire DTOs are not persisted without Debug Capture.
 
 The Tombstone keeps internally:
 
@@ -135,11 +138,13 @@ Active requests and the replay cache use:
 
 A new ingress gets `409 Conflict` when the same combination is already pending or completed within the last 10 minutes. The replay cache and the Tombstones share the same TTL, but they are two separate structures: the former blocks duplicate ingresses, the latter explains recently completed approval IDs.
 
+These checks apply only to unmatched requests. Session Rule hits return immediately without consulting or updating replay state, including when their identity is already pending or recently completed.
+
 ## Shutdown and crashes
 
 When the daemon receives `SIGINT` or `SIGTERM`, or when the webhook/control server task ends unexpectedly:
 
-1. The Broker turns all pending requests into `denied`;
+1. The Broker disables new registration and automatic grants, clears Session Rules, and turns all pending requests into `denied`;
 2. handlers that still have a oneshot receiver get `approval daemon is shutting down`;
 3. it waits `100ms` for best-effort response writes;
 4. it aborts the webhook and control server tasks;

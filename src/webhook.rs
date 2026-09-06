@@ -12,7 +12,7 @@ use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use tokio::net::TcpListener;
 
-use crate::broker::{Broker, BrokerError};
+use crate::broker::{Broker, BrokerError, IngressOutcome};
 use crate::protocol::{ProtocolError, parse_webhook_body};
 
 pub const WEBHOOK_PATH: &str = "/v1/webhooks/approval";
@@ -105,8 +105,11 @@ async fn handle(
             ));
         }
     };
-    let submission = match context.broker.submit(incoming).await {
-        Ok(submission) => submission,
+    let submission = match context.broker.ingress(incoming).await {
+        Ok(IngressOutcome::Automatic(decision)) => {
+            return Ok(json_response(StatusCode::OK, &decision));
+        }
+        Ok(IngressOutcome::Pending(submission)) => submission,
         Err(BrokerError::DuplicateRequest) => {
             return Ok(logged_error_response(
                 StatusCode::CONFLICT,

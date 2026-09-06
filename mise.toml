@@ -90,6 +90,7 @@ else
   zellij -n zellij/dev.kdl -s "${session}"
 fi
 '''
+interactive = true
 
 [tasks.build]
 description = "Build an optimized Rust binary"

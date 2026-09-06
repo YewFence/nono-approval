@@ -44,8 +44,20 @@ The known request fields kept in memory and returned through the owner-only cont
 
 _Avoid_: redacted approval, approval history, persisted request.
 
+## Rule Draft
+
+A candidate rule containing Action, literal Path, Scope, and Access. It is not active and has no implied request, lifetime, or persistence. A host workflow decides when and where a validated draft is saved. The approval workflow additionally requires it to cover its fixed source request; its TUI only selects the original path or an ancestor, rather than editing arbitrary text. See [Rule Scope Selector](rule-editor.md).
+
+_Avoid_: pending approval, active policy, persisted rule.
+
+## Session Rule
+
+An explicitly remembered capability path/scope/access decision stored for one daemon run. It applies across all nono session IDs using that daemon, inherits the source request's exact access mode, and is removed by clear or restart. Creation and the source request's decision are atomic; subsequent hits bypass pending registration. See [Session Rules](session-rules.md).
+
+_Avoid_: per-agent rule, permanent approval, profile grant, filesystem enforcement.
+
 ## Debug Capture
 
-The pattern where, once explicitly enabled, each daemon start creates an NDJSON file in the project-managed owner-only state directory and appends `request_received` and `request_completed` plaintext diagnostic events. It is not default behavior and not an authoritative audit log; files are removed only by an explicit `debug clean`.
+The pattern where, once explicitly enabled, each daemon start creates an NDJSON file in the project-managed owner-only state directory and appends `request_received`, `request_completed`, and `policy_decision` plaintext diagnostic events. It is not default behavior and not an authoritative audit log; files are removed only by an explicit `debug clean`.
 
 _Avoid_: default logging, audit log, implicit persistence.
