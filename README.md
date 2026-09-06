@@ -2,7 +2,7 @@
 
 `nono-approval` is a local approval daemon. It receives operations awaiting approval through the synchronous webhook ApprovalBackend of nono 0.69 and later, then moves the human interaction to a TUI or precise CLI commands in another terminal, so full-screen agent TUIs never contend with nono's terminal backend for the same TTY.
 
-It does not execute commands, proxy passwords, modify the nono profile, or bypass nono's hard deny; every decision maps to exactly one full approval ID and takes effect exactly once.
+It does not execute commands, proxy passwords, modify the nono profile, or bypass nono's hard deny. Ordinary decisions are one-shot; explicit Session Rules can remember capability path decisions for the current daemon run.
 
 ## Platforms and installation
 
@@ -52,6 +52,23 @@ nono-approval deny appr_0123456789abcdef --reason "outside this task"
 
 `show`, `approve`, and `deny` accept only the full ID: `appr_` plus 16 lowercase hex characters. Prefixes, `latest`, and `all` are not supported.
 
+## Runtime session rules
+
+To stop repeatedly deciding the same capability path, use `r` in the TUI to select a rule scope. Left/`h` selects the parent path; Right/`l` restores one component, never beyond the original request path. Ancestors always use Tree scope; at the original path, Space toggles Exact path/Tree. Press `a` to approve and remember, `d` to deny and remember, or Esc to cancel. For `/path/to/project/src/main.rs`, pressing Left twice selects `/path/to/project` and its subtree. `p`, `P`, and `A` remain selector entry points, not immediate decisions. Rules inherit the request's exact access mode: approving a `Read` request does not auto-approve `Write` or `ReadWrite`.
+
+```bash
+nono-approval deny appr_0123456789abcdef --session-path
+nono-approval deny appr_0123456789abcdef --session-dir
+nono-approval approve appr_0123456789abcdef --session-dir
+nono-approval approve appr_0123456789abcdef --session-path
+nono-approval approve appr_0123456789abcdef --session-dir --rule-path /path/to/project
+nono-approval session-rules clear
+```
+
+In the TUI browse view, `C` opens the same daemon-wide clear operation: `y` confirms, while `n` or Esc cancels. The footer shows `C clear rules` even with an empty queue. Clearing removes all Allow/Deny rules, including those created by other clients, without deciding pending requests.
+
+Rules apply across all nono sessions using the daemon and last until clear or daemon restart, not merely until the TUI closes. Directory scope includes the selected rule path itself and all descendants; it never silently chooses a parent. The rule must cover its still-pending source request. More-specific rules win; the same path/scope/access rule is replaced by the latest choice. The limit is 128 rules, and `status` plus the TUI footer show the count. Existing pending requests are unaffected. There is no policy file or persistence in this version. See [Session Rules](docs/design/session-rules.md) for semantics and [Rule Scope Selector](docs/design/rule-editor.md) for the selection workflow.
+
 ## nono configuration essentials
 
 Default webhook endpoint:
@@ -91,7 +108,7 @@ Unknown fields, a missing or unsupported schema version, a non-loopback listener
 
 ## Debug Capture
 
-Normal mode never writes approval details to disk or to ordinary logs; plaintext details are destroyed as soon as a request reaches a terminal state. Enable capture explicitly when you need diagnostics:
+Normal mode does not persist full approval details. Explicitly remembered rules retain their normalized paths and access modes until clear/restart, and rule hits log the sanitized rule path. Other request details are destroyed as soon as a request reaches a terminal state. Enable capture explicitly when you need full diagnostics:
 
 ```bash
 nono-approval serve --debug-capture

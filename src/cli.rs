@@ -10,10 +10,13 @@ use clap_complete::{Shell, generate};
 
 use crate::broker::{ApprovalId, BrokerConfig, DEFAULT_DENIAL_REASON, validate_denial_reason};
 use crate::config::{ResolvedConfig, load, setup};
-use crate::control::{ApprovalView, ControlClient, DebugCaptureStatus, DecisionRequest};
+use crate::control::{
+    ApprovalView, ControlClient, DebugCaptureStatus, DecisionRequest, SessionRuleRequest,
+};
 use crate::daemon::{DaemonConfig, run};
 use crate::debug_capture::{DebugCapture, clean_captures, list_captures};
 use crate::display::truncate_summary;
+use crate::policy::{RuleAction, RuleScope};
 use crate::runtime_path::ProjectPaths;
 use crate::webhook::WEBHOOK_PATH;
 
@@ -45,6 +48,11 @@ enum Command {
     Approve(DecisionArgs),
     /// Deny one pending request by its full ID.
     Deny(DenyArgs),
+    /// Manage daemon-lifetime rules shared by all nono sessions.
+    SessionRules {
+        #[command(subcommand)]
+        command: SessionRulesCommand,
+    },
     /// Inspect or remove explicit debug captures.
     Debug {
         #[command(subcommand)]
@@ -79,6 +87,12 @@ enum DebugCommand {
     Clean,
 }
 
+#[derive(Debug, Subcommand)]
+enum SessionRulesCommand {
+    /// Clear all runtime allow and deny rules without restarting the daemon.
+    Clear(ClientArgs),
+}
+
 #[derive(Clone, Debug, Args)]
 struct ClientArgs {
     #[arg(long, hide = true)]
@@ -110,6 +124,8 @@ struct DecisionArgs {
     /// Full approval ID, such as `appr_0123456789abcdef`.
     approval_id: ApprovalId,
     #[command(flatten)]
+    remember: RememberArgs,
+    #[command(flatten)]
     client: ClientArgs,
 }
 
@@ -121,7 +137,24 @@ struct DenyArgs {
     #[arg(long)]
     reason: Option<String>,
     #[command(flatten)]
+    remember: RememberArgs,
+    #[command(flatten)]
     client: ClientArgs,
+}
+
+#[derive(Debug, Args)]
+#[group(skip)]
+#[command(group(clap::ArgGroup::new("session_scope").args(["session_path", "session_dir"])))]
+struct RememberArgs {
+    /// Remember this exact capability path for this daemon run (exact access).
+    #[arg(long)]
+    session_path: bool,
+    /// Remember this capability path and descendants for this daemon run (exact access).
+    #[arg(long)]
+    session_dir: bool,
+    /// Edit the remembered literal path; the chosen scope must cover the source request.
+    #[arg(long, requires = "session_scope")]
+    rule_path: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -198,12 +231,19 @@ async fn execute(cli: Cli) -> Result<(), Box<dyn Error>> {
                 DecisionArgs {
                     approval_id: args.approval_id,
                     client: args.client,
+                    remember: args.remember,
                 },
                 DecisionRequest::Denied { reason },
             )
             .await?;
         }
         Some(Command::Debug { command }) => debug_command(command)?,
+        Some(Command::SessionRules {
+            command: SessionRulesCommand::Clear(args),
+        }) => {
+            let response = client(args)?.clear_session_rules().await?;
+            println!("Cleared {} session rule(s).", response.cleared);
+        }
         Some(Command::Completions { shell }) => {
             generate(
                 shell,
@@ -250,6 +290,7 @@ async fn status(args: ClientArgs) -> Result<(), Box<dyn Error>> {
     let status = client(args)?.status().await?;
     println!("Daemon: running");
     println!("Pending: {}", status.pending);
+    println!("Session rules: {}", status.session_rule_count);
     println!("Started: {}s ago", status.uptime_seconds);
     println!("Webhook: {}", status.webhook_listen);
     match status.debug_capture {
@@ -322,10 +363,37 @@ async fn show(args: ShowArgs) -> Result<(), Box<dyn Error>> {
 }
 
 async fn decide(args: DecisionArgs, decision: DecisionRequest) -> Result<(), Box<dyn Error>> {
-    let response = client(args.client)?
-        .decide(&args.approval_id, &decision)
-        .await?;
+    let client = client(args.client)?;
+    let scope = if args.remember.session_path {
+        Some(RuleScope::Path)
+    } else {
+        args.remember.session_dir.then_some(RuleScope::Directory)
+    };
+    let response = if let Some(scope) = scope {
+        let (action, reason) = match decision {
+            DecisionRequest::Granted => (RuleAction::Allow, None),
+            DecisionRequest::Denied { reason } => (RuleAction::Deny, Some(reason)),
+        };
+        client
+            .remember(
+                &args.approval_id,
+                &SessionRuleRequest {
+                    action,
+                    scope,
+                    reason,
+                    path: args.remember.rule_path,
+                },
+            )
+            .await?
+    } else {
+        client.decide(&args.approval_id, &decision).await?
+    };
     println!("{}: {:?}", response.approval_id, response.state);
+    if let Some(scope) = scope {
+        println!(
+            "Remembered {scope:?} rule for this daemon run (all nono sessions, exact access)."
+        );
+    }
     Ok(())
 }
 
@@ -450,6 +518,58 @@ mod tests {
     }
 
     #[test]
+    fn session_flags_are_explicit_and_mutually_exclusive() {
+        let id = "appr_0123456789abcdef";
+        for args in [
+            vec!["nono-approval", "deny", id, "--session-path"],
+            vec![
+                "nono-approval",
+                "deny",
+                id,
+                "--session-dir",
+                "--reason",
+                "outside task",
+            ],
+            vec!["nono-approval", "approve", id, "--session-dir"],
+            vec!["nono-approval", "approve", id, "--session-path"],
+            vec![
+                "nono-approval",
+                "approve",
+                id,
+                "--session-dir",
+                "--rule-path",
+                "/work",
+            ],
+            vec!["nono-approval", "session-rules", "clear"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(
+            Cli::try_parse_from([
+                "nono-approval",
+                "deny",
+                id,
+                "--session-path",
+                "--session-dir"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["nono-approval", "approve", id, "--rule-path", "/work"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "nono-approval",
+                "approve",
+                id,
+                "--session-path",
+                "--session-dir"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn public_subcommands_have_help_descriptions() {
         let command = Cli::command();
         for name in [
@@ -461,6 +581,7 @@ mod tests {
             "show",
             "approve",
             "deny",
+            "session-rules",
             "debug",
             "completions",
         ] {

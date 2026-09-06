@@ -26,6 +26,14 @@ mise run check       # repo:check, rust:check, test
 - the monotonic deadline expiry returning a denial;
 - duplicate, per-session, and global capacity.
 
+### Session Rules
+
+`src/policy.rs` covers component-glob semantics, exact/subtree specificity independent of insertion order, access-key separation, latest-choice replacement, literal wildcard/variable-looking filenames, component normalization, invalid paths, capacity, clearing, sanitized denial reasons, and draft/source-coverage validation. `src/cli.rs` covers symmetric approve/deny scopes, mutual exclusion, and requiring a scope with `--rule-path`. TUI tests drive `r`, `p`, `P`, and `A` through a real Unix control listener, require explicit submission, edit a file request into a project-tree grant, preserve raw source paths, and prevent source rebinding after completion or disconnect.
+
+`src/rule_selector.rs` tests bounded and reversible Left/Right and h/l navigation, ancestor Tree scope, original-scope restoration, root boundaries, explicit a/d submission, modifier/repeat-event protection, literal UTF-8 path preservation, and lossless wrapping. Rendered buffers cover wide, 80-column, 60-column, and minimum layouts; the host also covers too-small submission blocking and resize recovery. This is not a real-terminal screenshot or nono sandbox test.
+
+TUI clear-rule tests use the Unix control listener to clear both Allow and Deny rules created by another client while preserving pending request identity and deadline. They cover confirmation/cancellation, intercepted browse actions, ignored modified/repeated keys, empty queues, visible controls at 80x24, 60x24 and 36x12, too-small confirmation blocking, clear failures, and confirmation invalidation on disconnect.
+
 ### Wire Adapter and webhook
 
 `src/protocol.rs` and `src/webhook.rs` currently cover:
@@ -88,6 +96,10 @@ The four fixtures pin the current DTO behavior of this project; the test depende
 
 This integration test uses a temporary socket path and an in-process Broker; it does not start a full CLI process and does not run nono.
 
+`tests/session_rules.rs` additionally starts real CLI processes against a Unix control listener and sends TCP webhooks. It verifies automatic allow/deny responses, exact-access and component-boundary misses, bypassing pending capacity, validation before matching, source-request reasons, count/clear commands, and `policy_decision` records without approval IDs. Broker-level cases cover non-capability/invalid/stale requests, atomic capacity failures, replacements at capacity, concurrent decisions, preservation of other pending requests, shutdown, and fresh-daemon state. Malformed and oversized session-rule HTTP bodies cannot decide or remember a request. These tests do not run nono itself.
+
+Edited-path cases also cover ancestor-tree grants via real CLI, exact remembered approval, unrelated/exact-ancestor/relative/traversing path rejection without deciding the source, exact-access inheritance, and rejecting an edited rule after its source completes.
+
 ## CI
 
 GitHub Actions currently runs:
@@ -112,7 +124,7 @@ The following behaviors exist in code or docs, but the current test suite provid
 - different-UID socket-pair behavior and platform API failure paths of Linux/macOS peer identity;
 - the full daemon's denial, 100ms flush, and socket cleanup after `SIGINT`/`SIGTERM`;
 - network-level tests of the webhook's method, content type, all error status codes, and disconnect cancellation;
-- Tombstone 1024-entry/10-minute eviction, replay TTL, and concurrent double-decision race tests;
+- Tombstone 1024-entry/10-minute eviction and replay TTL;
 - Debug Capture runtime I/O failure turning into failed while approvals continue;
 - actual paths and socket ABI length boundaries for every ProjectDirs platform;
 - all TUI keybindings, the 500ms/1s cadence, selection fallback, resize, and panic/abnormal terminal restore;

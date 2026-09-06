@@ -15,7 +15,8 @@ use thiserror::Error;
 
 use crate::broker::{ApprovalId, ResponseDeliveryOutcome, TerminalState};
 use crate::display::sanitize;
-use crate::protocol::IncomingApproval;
+use crate::policy::SessionRule;
+use crate::protocol::{IncomingApproval, WebhookDecision};
 use crate::runtime_path::{
     RuntimePathError, ensure_owner_directory, validate_owner_directory, validate_path_components,
 };
@@ -150,6 +151,24 @@ impl DebugCapture {
             "reason": reason,
             "wait_duration_ms": wait_duration.as_millis(),
             "response_delivery_outcome": response_delivery_outcome,
+        }));
+    }
+
+    pub fn record_policy_decision(
+        &self,
+        incoming: &IncomingApproval,
+        rule: &SessionRule,
+        decision: &WebhookDecision,
+    ) {
+        self.append(&json!({
+            "schema_version": 1,
+            "event": "policy_decision",
+            "decision_source": "session_rule",
+            "claimed_backend": incoming.claimed_backend,
+            "wire_request": incoming.request,
+            "rule": {"path": rule.path, "scope": rule.scope, "access": rule.access, "action": rule.action},
+            "decision": decision,
+            "response_delivery_outcome": ResponseDeliveryOutcome::NotObserved,
         }));
     }
 

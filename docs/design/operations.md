@@ -52,6 +52,8 @@ max_body = "256KiB"
 
 `ConfigFile` currently has only three field groups: `schema_version`, `webhook`, and `approval`; the control socket is not written to the config and comes from the platform default path or the CLI `--control-socket`. Unknown fields, a missing version, a non-integer version, invalid TOML, a non-loopback listener, zero limits, and `max_per_session > max_pending` all fail.
 
+Runtime [Session Rules](session-rules.md) do not add config fields. They are created through owner-authenticated control actions, held only in daemon memory, and cleared on restart or `session-rules clear`. There is no policy-file configuration or environment-variable loader in this version.
+
 The file must be a regular file owned by the current user, must not be a symlink, and must have exactly `0600` permissions. `setup` writes atomically on first creation; `load` and `serve` only read, never migrating or repairing the file.
 
 Runtime values are overridden in this order:
@@ -124,12 +126,14 @@ src/
 ├── config.rs               # TOML schema and atomic setup
 ├── runtime_path.rs         # ProjectDirs and owner-only paths
 ├── peer_identity.rs        # Linux/macOS peer UID
+├── policy.rs               # component matcher and daemon-lifetime rules
+├── rule_selector.rs        # bounded source-path/ancestor selection, no free-form input
 ├── profile_validation.rs   # nono sandbox probe
 └── debug_capture.rs        # NDJSON capture
 tests/bridge.rs             # webhook/control bridge integration test
 ```
 
-The main seams between modules are `Broker`, `ControlClient`, `KnownApprovalRequest`, `ProjectPaths`, and `DebugCapture`; there is no database, web UI, plugin system, or policy engine.
+The main seams between modules are `Broker`, `ControlClient`, `KnownApprovalRequest`, `ProjectPaths`, and `DebugCapture`; there is no database, web UI, plugin system, or general-purpose policy engine. The lightweight Session Rule matcher is owned by the Broker.
 
 ## Dependencies and tooling
 

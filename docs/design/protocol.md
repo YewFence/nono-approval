@@ -94,6 +94,7 @@ validate method/path/content-type
     -> parse envelope and known variant
     -> validate identity and display fields
     -> build sanitized detail and enforce 1 MiB limit
+    -> evaluate Session Rules: hit returns granted/denied immediately
     -> reject duplicate (session_id, request_id)
     -> enforce per-session/global capacity
     -> generate approval_id and daemon deadline
@@ -104,18 +105,20 @@ validate method/path/content-type
 
 Duplicate requests return `409 Conflict`; a full per-session queue returns `429 Too Many Requests`; a full global queue returns `503 Service Unavailable`; a Broker registration failure returns `500 Internal Server Error`.
 
+Duplicate and capacity checks apply only after a rule miss. Rule hits have no approval ID, pending entry, Tombstone, or replay record, and do not revisit already-pending requests. Both evaluation and unmatched registration hold the same Broker lock as rule mutation. A shutting-down Broker returns denial instead of applying an allow rule.
+
 Webhook callers are not authenticated: any local process on loopback can submit a well-formed forged request or consume capacity. Ingress itself grants no control interface authority; owner/peer UID rules for the control socket are in [Security model](security.md).
 
 ## Webhook response
 
-Human approval:
+Human approval or an allow Session Rule hit:
 
 ```http
 200 OK
 {"decision":"granted"}
 ```
 
-Human denial, Lease expiry, or daemon shutdown:
+Human denial, a deny Session Rule hit, Lease expiry, or daemon shutdown:
 
 ```http
 200 OK
@@ -147,6 +150,7 @@ Returns:
   "version": "0.1.0",
   "uptime_seconds": 12,
   "pending": 1,
+  "session_rule_count": 0,
   "max_pending": 64,
   "max_per_session": 8,
   "webhook_listen": "127.0.0.1:17443",
@@ -233,6 +237,28 @@ Success response:
 Completed or expired requests return `409 Conflict`; unknown IDs return `404`. Decisions accept only full IDs and never act on another request because of a prefix, queue position, or ID reuse.
 
 The hard limit for control request bodies is `8 KiB`; oversized or unparsable decisions return `400`.
+
+### `POST /v1/approvals/{approval-id}/session-rule`
+
+Decides the still-pending source request and remembers its capability path in one atomic operation:
+
+```json
+{"action":"deny","scope":"directory","path":"/path/to/project","reason":"outside this task"}
+```
+
+`action` is `allow` or `deny`; `scope` is `path` or `directory`. Both fields are required. `path` is optional: absent or null preserves derive-from-source behavior; an explicit string edits the literal rule path. The daemon requires that path/scope to cover the still-pending source. The exact access mode is always inherited; clients cannot supply access or session ID overrides. `reason` is optional for deny (default `denied by local user`) and must be absent or null for allow. Unknown fields are rejected. See [Session Rules](session-rules.md) for matching and replacement semantics.
+
+Success returns the same `DecisionResponse` as `/decision`. Unknown IDs return `404`; completed/expired IDs and exhaustion of the 128-rule limit return `409`. Non-capability requests, invalid paths, paths/scopes that do not cover the source, invalid reasons, unknown enum values/fields, and bodies over `8 KiB` return `400`. A failed operation does not install a rule or decide the source request; expired leases still expire normally. New clients omit the path field when using the original source unchanged through the CLI. Older daemons reject explicit edited-path bodies as unknown fields rather than silently granting a different scope.
+
+### `DELETE /v1/session-rules`
+
+Clears every daemon-lifetime rule without affecting pending requests. The owner-authenticated response is:
+
+```json
+{"cleared":2}
+```
+
+Repeated clearing succeeds with `cleared: 0`. `GET /v1/status` exposes the current `session_rule_count`; the current management surface has no rule listing or per-rule deletion endpoint.
 
 ## Compatibility
 

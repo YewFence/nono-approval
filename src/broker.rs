@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 use crate::debug_capture::DebugCapture;
 use crate::display::{ApprovalDetailContent, sanitize, truncate_summary};
+use crate::policy::{PolicyError, RuleAction, RuleDraft, RuleScope, SessionRules};
 use crate::protocol::{
     IncomingApproval, KnownApprovalRequest, SourceKind, WIRE_ADAPTER_VERSION, WebhookDecision,
 };
@@ -169,6 +170,10 @@ pub enum BrokerError {
     DenialReasonTooLarge,
     #[error("operating-system randomness failed: {0}")]
     Random(String),
+    #[error(transparent)]
+    Policy(#[from] PolicyError),
+    #[error("approval daemon is shutting down")]
+    ShuttingDown,
 }
 
 /// Validates a user-supplied denial reason.
@@ -221,6 +226,8 @@ struct BrokerState {
     pending: HashMap<ApprovalId, PendingApproval>,
     replay: HashMap<(String, String), Instant>,
     tombstones: VecDeque<Tombstone>,
+    session_rules: SessionRules,
+    shutting_down: bool,
 }
 
 #[derive(Clone)]
@@ -237,6 +244,11 @@ pub struct Submission {
     receiver: Option<oneshot::Receiver<WebhookDecision>>,
     broker: Broker,
     active: bool,
+}
+
+pub enum IngressOutcome {
+    Automatic(WebhookDecision),
+    Pending(Submission),
 }
 
 impl Submission {
@@ -320,7 +332,49 @@ impl Broker {
     /// Returns an error for duplicates, exhausted capacity, or unavailable OS randomness.
     pub async fn submit(&self, incoming: IncomingApproval) -> Result<Submission, BrokerError> {
         let mut state = self.state.lock().await;
-        self.prune(&mut state);
+        self.register(&mut state, incoming)
+    }
+
+    /// Evaluates runtime rules before registering an unmatched request.
+    ///
+    /// # Errors
+    ///
+    /// Returns registration errors only for unmatched requests.
+    pub async fn ingress(&self, incoming: IncomingApproval) -> Result<IngressOutcome, BrokerError> {
+        let mut state = self.state.lock().await;
+        if state.shutting_down {
+            return Ok(IngressOutcome::Automatic(WebhookDecision::Denied {
+                reason: "approval daemon is shutting down".to_owned(),
+            }));
+        }
+        if let Some(rule) = state.session_rules.evaluate(&incoming.request) {
+            let decision = rule.decision();
+            tracing::info!(
+                action = ?rule.action,
+                scope = ?rule.scope,
+                access = %rule.access,
+                path = %sanitize(&rule.path),
+                session = %short_session_id(incoming.request.session_id()),
+                "session policy decision"
+            );
+            if let Some(capture) = &self.debug_capture {
+                capture.record_policy_decision(&incoming, rule, &decision);
+            }
+            return Ok(IngressOutcome::Automatic(decision));
+        }
+        self.register(&mut state, incoming)
+            .map(IngressOutcome::Pending)
+    }
+
+    fn register(
+        &self,
+        state: &mut BrokerState,
+        incoming: IncomingApproval,
+    ) -> Result<Submission, BrokerError> {
+        if state.shutting_down {
+            return Err(BrokerError::ShuttingDown);
+        }
+        self.prune(state);
         let replay_key = (
             incoming.request.session_id().to_owned(),
             incoming.request.request_id().to_owned(),
@@ -496,6 +550,98 @@ impl Broker {
         Ok(state)
     }
 
+    /// Atomically remembers a capability rule and decides its still-pending source request.
+    ///
+    /// # Errors
+    ///
+    /// Fails without installing a rule for expired/completed requests, unsupported paths,
+    /// invalid reasons, or exhausted rule capacity.
+    pub async fn decide_and_remember(
+        &self,
+        approval_id: &ApprovalId,
+        action: RuleAction,
+        scope: RuleScope,
+        reason: Option<String>,
+    ) -> Result<TerminalState, BrokerError> {
+        self.decide_and_remember_path(approval_id, action, scope, None, reason)
+            .await
+    }
+
+    /// Decides and remembers an optionally edited literal path, under the same lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the usual remember errors, or rejects an edited rule that does not cover its source.
+    pub async fn decide_and_remember_path(
+        &self,
+        approval_id: &ApprovalId,
+        action: RuleAction,
+        scope: RuleScope,
+        path: Option<String>,
+        reason: Option<String>,
+    ) -> Result<TerminalState, BrokerError> {
+        let decision = match action {
+            RuleAction::Allow => WebhookDecision::Granted,
+            RuleAction::Deny => {
+                let reason = reason.unwrap_or_else(|| DEFAULT_DENIAL_REASON.to_owned());
+                validate_denial_reason(&reason)?;
+                WebhookDecision::Denied { reason }
+            }
+        };
+        let mut state = self.state.lock().await;
+        self.expire_elapsed(&mut state);
+        self.prune(&mut state);
+        let BrokerState {
+            pending,
+            tombstones,
+            session_rules,
+            ..
+        } = &mut *state;
+        let std::collections::hash_map::Entry::Occupied(entry) = pending.entry(approval_id.clone())
+        else {
+            return Err(
+                if tombstones
+                    .iter()
+                    .any(|item| &item.approval_id == approval_id)
+                {
+                    BrokerError::NotPending
+                } else {
+                    BrokerError::NotFound
+                },
+            );
+        };
+        let source = &entry.get().wire_request;
+        let mut draft = RuleDraft::from_request(source, action, scope)?;
+        if let Some(path) = path {
+            draft.path = path;
+        }
+        draft.validate_source(source)?;
+        session_rules.insert(draft.compile()?)?;
+        let pending = entry.remove();
+        let terminal = match action {
+            RuleAction::Allow => TerminalState::Granted,
+            RuleAction::Deny => TerminalState::Denied,
+        };
+        self.complete(
+            &mut state,
+            pending,
+            terminal,
+            Some(decision),
+            "control_session_rule",
+        );
+        Ok(terminal)
+    }
+
+    pub async fn session_rule_count(&self) -> usize {
+        self.state.lock().await.session_rules.count()
+    }
+
+    pub async fn clear_session_rules(&self) -> usize {
+        let cleared = self.state.lock().await.session_rules.clear();
+        tracing::info!(cleared, "session rules cleared");
+        cleared
+    }
+
     /// Best-effort cancellation for a disconnected webhook handler.
     ///
     /// # Errors
@@ -519,6 +665,8 @@ impl Broker {
 
     pub async fn shutdown(&self) {
         let mut state = self.state.lock().await;
+        state.shutting_down = true;
+        state.session_rules.clear();
         let pending = state
             .pending
             .drain()

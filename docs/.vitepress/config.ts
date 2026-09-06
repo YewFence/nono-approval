@@ -26,6 +26,8 @@ export default defineConfig({
           { text: 'Architecture Overview', link: '/design/overview' },
           { text: 'Domain Language', link: '/design/domain-language' },
           { text: 'Approval Lifecycle', link: '/design/approval-lifecycle' },
+          { text: 'Session Rules', link: '/design/session-rules' },
+          { text: 'Rule Scope Selector', link: '/design/rule-editor' },
           { text: 'Protocol and Adaptation', link: '/design/protocol' },
           { text: 'Security Model', link: '/design/security' },
           { text: 'CLI and TUI', link: '/design/cli-and-tui' },
