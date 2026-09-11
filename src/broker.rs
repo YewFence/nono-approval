@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 use crate::debug_capture::DebugCapture;
 use crate::display::{ApprovalDetailContent, sanitize, truncate_summary};
+use crate::policy::SessionRule;
 use crate::policy::{PolicyError, RuleAction, RuleDraft, RuleScope, SessionRules};
 use crate::protocol::{
     IncomingApproval, KnownApprovalRequest, SourceKind, WIRE_ADAPTER_VERSION, WebhookDecision,
@@ -640,6 +641,10 @@ impl Broker {
         let cleared = self.state.lock().await.session_rules.clear();
         tracing::info!(cleared, "session rules cleared");
         cleared
+    }
+
+    pub async fn replace_session_rules(&self, rules: Vec<SessionRule>) {
+        self.state.lock().await.session_rules.replace(rules);
     }
 
     /// Best-effort cancellation for a disconnected webhook handler.

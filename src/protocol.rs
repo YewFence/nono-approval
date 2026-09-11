@@ -16,7 +16,7 @@ pub enum SourceKind {
     Network,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum AccessMode {
     Read,
     Write,

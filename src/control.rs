@@ -25,7 +25,7 @@ use crate::debug_capture::DebugCapture;
 pub use crate::debug_capture::DebugCaptureStatus;
 use crate::display::MAX_DETAIL_BYTES;
 use crate::peer_identity::verify_owner;
-use crate::policy::{PolicyError, RuleAction, RuleScope};
+use crate::policy::{PolicyError, RuleAction, RuleDraft, RuleScope};
 use crate::protocol::WebhookDecision;
 
 const MAX_CONTROL_BODY_BYTES: usize = 8 * 1024;
@@ -93,6 +93,12 @@ pub struct ClearSessionRulesResponse {
     pub cleared: usize,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceSessionRulesRequest {
+    pub rules: Vec<RuleDraft>,
+}
+
 #[derive(Debug, Error)]
 pub enum ControlClientError {
     #[error("could not connect to approval daemon: {0}")]
@@ -113,6 +119,24 @@ pub struct ControlClient {
 }
 
 impl ControlClient {
+    /// Replaces all daemon session rules with one validated batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the batch.
+    pub async fn replace_session_rules(
+        &self,
+        rules: &[RuleDraft],
+    ) -> Result<ClearSessionRulesResponse, ControlClientError> {
+        self.request(
+            Method::PUT,
+            "/v1/session-rules",
+            Some(&ReplaceSessionRulesRequest {
+                rules: rules.to_vec(),
+            }),
+        )
+        .await
+    }
     #[must_use]
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -312,10 +336,44 @@ async fn handle(
             },
         ));
     }
+    if method == Method::PUT && path == "/v1/session-rules" {
+        return Ok(replace_rules_response(request, &context.broker).await);
+    }
     let Some(remainder) = path.strip_prefix("/v1/approvals/") else {
         return Ok(empty_response(StatusCode::NOT_FOUND));
     };
     Ok(handle_approval(request, context, remainder).await)
+}
+
+async fn replace_rules_response(
+    request: Request<Incoming>,
+    broker: &Broker,
+) -> Response<Full<Bytes>> {
+    let Ok(body) = read_decision_body(request.into_body()).await else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
+    };
+    let Ok(request) = serde_json::from_slice::<ReplaceSessionRulesRequest>(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
+    };
+    let mut rules = Vec::with_capacity(request.rules.len());
+    for draft in request.rules {
+        match draft.compile() {
+            Ok(rule) => rules.push(rule),
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, &error.to_string()),
+        }
+    }
+    let mut keys = std::collections::HashSet::new();
+    for rule in &rules {
+        if !keys.insert((rule.path.clone(), rule.scope, rule.access)) {
+            return error_response(StatusCode::BAD_REQUEST, "duplicate session rule");
+        }
+    }
+    let count = rules.len();
+    broker.replace_session_rules(rules).await;
+    json_response(
+        StatusCode::OK,
+        &ClearSessionRulesResponse { cleared: count },
+    )
 }
 
 async fn handle_approval(

@@ -2,6 +2,8 @@
 
 Session Rules are explicit runtime shortcuts for repeated capability requests. They live only in the approval daemon's memory, apply to every nono session using that daemon, and disappear on clear, shutdown, or restart. "Session" here means the daemon run, not a nono `session_id`, TUI connection, or terminal lifetime.
 
+The default TUI client can load a complete rule set with `nono-approval --policy <name-or-path>`. Bare names resolve to `~/.config/nono-approval/<name>.toml`; explicit relative and absolute paths are also supported. The file uses `[[rules]]` entries with `action`, `path`, `scope`, and `access`. The client validates the complete file before one atomic `PUT /v1/session-rules` request. Duplicate keys are rejected, and an empty list clears all rules.
+
 ## Creating a rule
 
 Select a pending capability request and press `r` to open the [Rule Scope Selector](rule-editor.md) at its original path with Exact path scope. Left/`h` selects a parent with Tree scope; Right/`l` restores one component, stopping at the original path. Space toggles Exact path/Tree at the original path only. `p` also opens Exact path; `P` and `A` open Tree. No entry point decides immediately: `a` approves and remembers, `d` denies and remembers, and Esc cancels. Ordinary queue `a`, `d`, and `D` retain their one-shot behavior. Immediate CLI equivalents are:

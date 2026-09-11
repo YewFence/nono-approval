@@ -67,7 +67,22 @@ nono-approval session-rules clear
 
 In the TUI browse view, `C` opens the same daemon-wide clear operation: `y` confirms, while `n` or Esc cancels. The footer shows `C clear rules` even with an empty queue. Clearing removes all Allow/Deny rules, including those created by other clients, without deciding pending requests.
 
-Rules apply across all nono sessions using the daemon and last until clear or daemon restart, not merely until the TUI closes. Directory scope includes the selected rule path itself and all descendants; it never silently chooses a parent. The rule must cover its still-pending source request. More-specific rules win; the same path/scope/access rule is replaced by the latest choice. The limit is 128 rules, and `status` plus the TUI footer show the count. Existing pending requests are unaffected. There is no policy file or persistence in this version. See [Session Rules](docs/design/session-rules.md) for semantics and [Rule Scope Selector](docs/design/rule-editor.md) for the selection workflow.
+Rules apply across all nono sessions using the daemon and last until clear or daemon restart, not merely until the TUI closes. Directory scope includes the selected rule path itself and all descendants; it never silently chooses a parent. The rule must cover its still-pending source request. More-specific rules win; the same path/scope/access rule is replaced by the latest choice. The limit is 128 rules, and `status` plus the TUI footer show the count. Existing pending requests are unaffected. 预设规则也可以在进入 TUI 前通过 TOML 加载。裸名称搜索 `~/.config/nono-approval/<name>.toml`，相对路径和绝对路径也可直接使用：
+
+```toml
+[[rules]]
+action = "allow"
+path = "/work/project"
+scope = "directory"
+access = "read"
+```
+
+```text
+nono-approval --policy work
+nono-approval --policy ./work.toml
+```
+
+加载会原子替换 daemon 当前全部规则；空规则会清空规则。daemon 必须已经运行，加载失败不会改变现有规则。See [Session Rules](docs/design/session-rules.md) for semantics and [Rule Scope Selector](docs/design/rule-editor.md) for the selection workflow.
 
 ## nono configuration essentials
 
