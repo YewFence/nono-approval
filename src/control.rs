@@ -93,6 +93,11 @@ pub struct ClearSessionRulesResponse {
     pub cleared: usize,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionRulesResponse {
+    pub rules: Vec<RuleDraft>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceSessionRulesRequest {
@@ -230,6 +235,16 @@ impl ControlClient {
             .await
     }
 
+    /// Fetches the daemon's complete current rule set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or rejects the request.
+    pub async fn session_rules(&self) -> Result<SessionRulesResponse, ControlClientError> {
+        self.request(Method::GET, "/v1/session-rules", None::<&()>)
+            .await
+    }
+
     async fn request<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -336,6 +351,14 @@ async fn handle(
             },
         ));
     }
+    if method == Method::GET && path == "/v1/session-rules" {
+        return Ok(json_response(
+            StatusCode::OK,
+            &SessionRulesResponse {
+                rules: context.broker.session_rule_drafts().await,
+            },
+        ));
+    }
     if method == Method::PUT && path == "/v1/session-rules" {
         return Ok(replace_rules_response(request, &context.broker).await);
     }
@@ -356,6 +379,9 @@ async fn replace_rules_response(
         return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
     };
     let mut rules = Vec::with_capacity(request.rules.len());
+    if request.rules.len() > crate::policy::MAX_SESSION_RULES {
+        return error_response(StatusCode::BAD_REQUEST, "session rule limit reached (128)");
+    }
     for draft in request.rules {
         match draft.compile() {
             Ok(rule) => rules.push(rule),

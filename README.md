@@ -84,6 +84,8 @@ nono-approval --policy ./work.toml
 
 加载会原子替换 daemon 当前全部规则；空规则会清空规则。daemon 必须已经运行，加载失败不会改变现有规则。See [Session Rules](docs/design/session-rules.md) for semantics and [Rule Scope Selector](docs/design/rule-editor.md) for the selection workflow.
 
+在 TUI 中按 `S` 可将 daemon 当前全部规则保存为新的 TOML 文件。输入裸名称时保存到 `~/.config/nono-approval/`，也支持相对路径和绝对路径。已有文件不会覆盖；空规则集不能保存。
+
 ## nono configuration essentials
 
 Default webhook endpoint:

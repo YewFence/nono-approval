@@ -48,7 +48,7 @@ pub enum PolicyError {
     PolicyToml(#[from] toml::de::Error),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyFile {
     #[serde(default)]
@@ -344,6 +344,18 @@ impl SessionRule {
 pub struct SessionRules(Vec<SessionRule>);
 
 impl SessionRules {
+    #[must_use]
+    pub fn drafts(&self) -> Vec<RuleDraft> {
+        self.0
+            .iter()
+            .map(|rule| RuleDraft {
+                action: rule.action,
+                path: rule.path.clone(),
+                scope: rule.scope,
+                access: rule.access,
+            })
+            .collect()
+    }
     pub fn replace(&mut self, rules: Vec<SessionRule>) {
         self.0 = rules;
     }

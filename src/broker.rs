@@ -647,6 +647,10 @@ impl Broker {
         self.state.lock().await.session_rules.replace(rules);
     }
 
+    pub async fn session_rule_drafts(&self) -> Vec<RuleDraft> {
+        self.state.lock().await.session_rules.drafts()
+    }
+
     /// Best-effort cancellation for a disconnected webhook handler.
     ///
     /// # Errors

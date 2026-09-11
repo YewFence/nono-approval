@@ -82,9 +82,8 @@ provenance = "github-attestations"
 
 [tools.aube."platforms.linux-x64"]
 checksum = "sha256:965ae6a487c3e280206afb93649e721387dbbba168567f02e2fa5c797c450c2b"
-url = "https://github.com/jdx/aube/releases/download/v1.41.0/aube-v1.41.0-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/jdx/aube/releases/assets/517166989"
-provenance = "github-attestations"
+url = "https://github.com/aubepkg/aube/releases/download/v1.41.0/aube-v1.41.0-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/aubepkg/aube/releases/assets/517166989"
 
 [tools.aube."platforms.linux-x64-baseline"]
 checksum = "sha256:965ae6a487c3e280206afb93649e721387dbbba168567f02e2fa5c797c450c2b"
@@ -252,97 +251,97 @@ url_api = "https://api.github.com/repos/suzuki-shunsuke/nllint/releases/assets/4
 provenance = "github-attestations"
 
 [[tools.hk]]
-version = "1.56.1"
+version = "1.58.1"
 backend = "aqua:jdx/hk"
 
 [tools.hk."platforms.linux-arm64"]
-checksum = "sha256:cd671706a273dac35b012fd585a0fba1b0c0f340558dccfd4c9a4b976a794597"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632120"
+checksum = "sha256:0972e05774ea3651fd521676c1bc6411333fe4404beb4a48067e10b54dfd1b4d"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232324"
 
 [tools.hk."platforms.linux-arm64-musl"]
-checksum = "sha256:5feac3cfcdae33227197d0104832b91a5d293733320632c3c19f864866a6c8ce"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-aarch64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632119"
+checksum = "sha256:a49cc7c21cf914c03fbda6289254bb704d424e91458afd91074f16921f9a5e84"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-aarch64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232327"
 
 [tools.hk."platforms.linux-x64"]
-checksum = "sha256:67157431e36bb523213d8361a9f59b6eb718f80ae8534827849552b3c6c92a04"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632131"
+checksum = "sha256:8139133a70ed7cf1d4a0f2f19c26b1b68d714d81af91b2b1f42c4c524afc0fe5"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232333"
 
 [tools.hk."platforms.linux-x64-baseline"]
-checksum = "sha256:67157431e36bb523213d8361a9f59b6eb718f80ae8534827849552b3c6c92a04"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632131"
+checksum = "sha256:8139133a70ed7cf1d4a0f2f19c26b1b68d714d81af91b2b1f42c4c524afc0fe5"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232333"
 
 [tools.hk."platforms.linux-x64-musl"]
-checksum = "sha256:e7435c1aec98f60d98712da3231541987ac67c017c001f767c0f37bd517cfe43"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632133"
+checksum = "sha256:df8a97c000d59756c14096a550d211d7346c41abf2a20d394aaa0d9bc9695ef5"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232335"
 
 [tools.hk."platforms.linux-x64-musl-baseline"]
-checksum = "sha256:e7435c1aec98f60d98712da3231541987ac67c017c001f767c0f37bd517cfe43"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632133"
+checksum = "sha256:df8a97c000d59756c14096a550d211d7346c41abf2a20d394aaa0d9bc9695ef5"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232335"
 
 [tools.hk."platforms.macos-arm64"]
-checksum = "sha256:f8400a1427e66f1b968e58568115a2138b5d0fe88e0561b97d3822648b7e35ea"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632123"
+checksum = "sha256:5529d95c63ea3ba9318f551e19760998a9ddf7ed926a14daf39dc46717ab32bf"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232326"
 
 [tools.hk."platforms.windows-x64"]
-checksum = "sha256:4ccf353e484997dd4975361b6433f3b2661f5db614f2b382cddcac7eaa74a604"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632118"
+checksum = "sha256:fb11cf7aa477f3f0546cf66a05ac9a8563322500e5766f63c011ffb97f5c708d"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232325"
 
 [tools.hk."platforms.windows-x64-baseline"]
-checksum = "sha256:4ccf353e484997dd4975361b6433f3b2661f5db614f2b382cddcac7eaa74a604"
-url = "https://github.com/jdx/hk/releases/download/v1.56.1/hk-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/jdx/hk/releases/assets/525632118"
+checksum = "sha256:fb11cf7aa477f3f0546cf66a05ac9a8563322500e5766f63c011ffb97f5c708d"
+url = "https://github.com/jdx/hk/releases/download/v1.58.1/hk-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/jdx/hk/releases/assets/546232325"
 
 [[tools.node]]
-version = "26.7.0"
+version = "26.8.2"
 backend = "core:node"
 
 [tools.node."platforms.linux-arm64"]
-checksum = "sha256:925aa6157dd37542d0d7f2e28b7bf61e7b39284411210b0498bc3788db4aef68"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-arm64.tar.gz"
+checksum = "sha256:746cdbf21565b4ea06f77642bb0e85466de8bb722242be2c5e006f272c361c63"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-arm64.tar.gz"
 
 [tools.node."platforms.linux-arm64-musl"]
-checksum = "sha256:e650560ab1ecec0eb5845b43b87d6024c87b4e143c3e044cbb607cc135dbaadb"
-url = "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-arm64-musl.tar.gz"
+checksum = "sha256:125437a0b59d69592b8f4bb813a47245337afac8c973d15ab7720f0ec55d182d"
+url = "https://unofficial-builds.nodejs.org/download/release/v26.8.2/node-v26.8.2-linux-arm64-musl.tar.gz"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:bd6b6c31e377bad9ad579bed72e5bc11f4c879ac9452ad51d30e646ea3d828df"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.gz"
+checksum = "sha256:badb3fe6a61b85e1352ca6564dc56b8b7bd5ecd5c474c52acc21dd0cdd586f35"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-x64.tar.gz"
 
 [tools.node."platforms.linux-x64-baseline"]
-checksum = "sha256:bd6b6c31e377bad9ad579bed72e5bc11f4c879ac9452ad51d30e646ea3d828df"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.gz"
+checksum = "sha256:badb3fe6a61b85e1352ca6564dc56b8b7bd5ecd5c474c52acc21dd0cdd586f35"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-linux-x64.tar.gz"
 
 [tools.node."platforms.linux-x64-musl"]
-checksum = "sha256:84fc4e29e5f86022a40bac50a28a1b9275dd1f32eebbf4db499e2573ff822124"
-url = "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-x64-musl.tar.gz"
+checksum = "sha256:696eb0180248a06c9893f3f07bcc4e2680891c83118c73aaf1de330efd053910"
+url = "https://unofficial-builds.nodejs.org/download/release/v26.8.2/node-v26.8.2-linux-x64-musl.tar.gz"
 
 [tools.node."platforms.linux-x64-musl-baseline"]
-checksum = "sha256:84fc4e29e5f86022a40bac50a28a1b9275dd1f32eebbf4db499e2573ff822124"
-url = "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-x64-musl.tar.gz"
+checksum = "sha256:696eb0180248a06c9893f3f07bcc4e2680891c83118c73aaf1de330efd053910"
+url = "https://unofficial-builds.nodejs.org/download/release/v26.8.2/node-v26.8.2-linux-x64-musl.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
-checksum = "sha256:7ee659a7768e641bbfd5360940660b8e8fd0052f77488f365562bac522fc15d4"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-darwin-arm64.tar.gz"
+checksum = "sha256:974b6d5fb2fc7c33ff2354db0902b4e91c2de01ec8acc6de48e543c97e18c9e1"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-darwin-arm64.tar.gz"
 
 [tools.node."platforms.macos-x64"]
-checksum = "sha256:f279d1ed28ce57f7788bf23435d2ad7fdd7438904ad5c4d8a1081a7cde3d4b96"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-darwin-x64.tar.gz"
+checksum = "sha256:adb8feb2d4987df3d72d2ec46f4fc4b58039c859b8c3f0e3cc2d3c6cbaf8629c"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-darwin-x64.tar.gz"
 
 [tools.node."platforms.windows-x64"]
-checksum = "sha256:d3bd72755141ed32bbcd841228ee81897c8a98d50dfa7dae2179399a0a7c90f8"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-x64.zip"
+checksum = "sha256:cf02f5d0c06c794b84f277177d5cf3743d0924ca49f6641cd435dd7cb6ee9085"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip"
 
 [tools.node."platforms.windows-x64-baseline"]
-checksum = "sha256:d3bd72755141ed32bbcd841228ee81897c8a98d50dfa7dae2179399a0a7c90f8"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-x64.zip"
+checksum = "sha256:cf02f5d0c06c794b84f277177d5cf3743d0924ca49f6641cd435dd7cb6ee9085"
+url = "https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip"
 
 [[tools.pinact]]
 version = "4.1.1"
