@@ -1,5 +1,6 @@
-use std::io;
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -8,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use thiserror::Error;
 
 use crate::broker::{
@@ -19,9 +20,10 @@ use crate::control::{
     SessionRuleRequest,
 };
 use crate::display::{sanitize, truncate_summary};
-use crate::policy::{RuleAction, RuleDraft, RuleScope};
+use crate::policy::{PolicyFile, RuleAction, RuleDraft, RuleScope};
 use crate::protocol::KnownApprovalRequest;
 use crate::rule_selector::{RuleSelector, SelectorEvent, display_path};
+use crate::runtime_path::ProjectPaths;
 
 const CONNECTED_POLL: Duration = Duration::from_millis(500);
 const DISCONNECTED_POLL: Duration = Duration::from_secs(1);
@@ -34,6 +36,11 @@ pub enum InteractiveError {
 
 struct ReasonInput {
     approval_id: ApprovalId,
+    value: String,
+    error: Option<String>,
+}
+
+struct SaveInput {
     value: String,
     error: Option<String>,
 }
@@ -79,6 +86,7 @@ struct App {
     detail_scroll: u16,
     show_detail_panel: bool,
     reason: Option<ReasonInput>,
+    save: Option<SaveInput>,
     editing: Option<ApprovalRuleEditing>,
     clear_confirmation: ClearConfirmation,
     status: String,
@@ -99,6 +107,7 @@ impl App {
             detail_scroll: 0,
             show_detail_panel: false,
             reason: None,
+            save: None,
             editing: None,
             clear_confirmation: ClearConfirmation::Closed,
             status: "Disconnected — waiting for daemon…".to_owned(),
@@ -213,6 +222,48 @@ impl App {
             Err(error) => format!("Clear session rules failed: {error}"),
         };
         self.next_poll = Instant::now();
+        self.status_until = Instant::now() + Duration::from_secs(4);
+    }
+
+    async fn save_session_rules(&mut self, value: &str) {
+        let rules = match self.client.session_rules().await {
+            Ok(response) => response.rules,
+            Err(error) => {
+                self.status = format!("Save rules failed: {error}");
+                return;
+            }
+        };
+        if rules.is_empty() {
+            "Save rules failed: no session rules".clone_into(&mut self.status);
+            return;
+        }
+        let paths = match ProjectPaths::resolve() {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.status = format!("Save rules failed: {error}");
+                return;
+            }
+        };
+        let path = resolve_save_path(value, &paths);
+        let contents = match toml::to_string_pretty(&PolicyFile { rules }) {
+            Ok(contents) => contents,
+            Err(error) => {
+                self.status = format!("Save rules failed: {error}");
+                return;
+            }
+        };
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => match file.write_all(contents.as_bytes()) {
+                Ok(()) => {
+                    self.status = format!(
+                        "Saved session rules to {}",
+                        sanitize(&path.display().to_string())
+                    );
+                }
+                Err(error) => self.status = format!("Save rules failed: {error}"),
+            },
+            Err(error) => self.status = format!("Save rules failed: {error}"),
+        }
         self.status_until = Instant::now() + Duration::from_secs(4);
     }
 
@@ -369,6 +420,9 @@ async fn run_loop(
 }
 
 async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.save.is_some() {
+        return handle_save_key(app, key).await;
+    }
     if app.clear_confirmation != ClearConfirmation::Closed {
         return handle_clear_rules_key(app, key).await;
     }
@@ -396,6 +450,14 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if key.kind == KeyEventKind::Press && app.connected =>
         {
             app.clear_confirmation = ClearConfirmation::Hidden;
+        }
+        (KeyCode::Char('S'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if key.kind == KeyEventKind::Press && app.connected =>
+        {
+            app.save = Some(SaveInput {
+                value: String::new(),
+                error: None,
+            });
         }
         (KeyCode::Down | KeyCode::Char('j'), _) => app.move_selection(1),
         (KeyCode::Up | KeyCode::Char('k'), _) => app.move_selection(-1),
@@ -450,6 +512,45 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         _ => {}
     }
     false
+}
+
+async fn handle_save_key(app: &mut App, key: KeyEvent) -> bool {
+    let Some(save) = &mut app.save else {
+        return false;
+    };
+    match key.code {
+        KeyCode::Esc => app.save = None,
+        KeyCode::Backspace => {
+            save.value.pop();
+            save.error = None;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => save.value.push(c),
+        KeyCode::Enter => {
+            if save.value.is_empty() {
+                save.error = Some("Path must not be empty".to_owned());
+            } else {
+                let value = save.value.clone();
+                app.save = None;
+                app.save_session_rules(&value).await;
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
+fn resolve_save_path(value: &str, paths: &ProjectPaths) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() || value.starts_with("./") || value.starts_with("../") {
+        return path;
+    }
+    if path.components().count() == 1 {
+        return paths.config_file.parent().unwrap().join(format!(
+            "{}.toml",
+            value.strip_suffix(".toml").unwrap_or(value)
+        ));
+    }
+    path
 }
 
 async fn handle_clear_rules_key(app: &mut App, key: KeyEvent) -> bool {
@@ -537,6 +638,9 @@ fn render(frame: &mut Frame<'_>, app: &mut App) {
         render_queue(frame, app, main);
     }
     render_footer(frame, app, footer);
+    if app.save.is_some() {
+        render_save_dialog(frame, app);
+    }
 }
 
 fn render_rule_editing(
@@ -687,6 +791,15 @@ fn capture_indicator(capture: &DebugCaptureStatus) -> &'static str {
 }
 
 fn footer_message(app: &App) -> String {
+    if let Some(save) = &app.save {
+        return format!(
+            "Save rules to file: {}{} | Enter save · Esc cancel",
+            sanitize(&save.value),
+            save.error
+                .as_ref()
+                .map_or(String::new(), |e| format!(" · {e}"))
+        );
+    }
     if app.clear_confirmation != ClearConfirmation::Closed {
         return format!(
             "Clear ALL {} allow/deny rules in this daemon (all clients)? Pending requests unchanged. y confirm | n/Esc cancel | Ctrl-C quit",
@@ -728,6 +841,41 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     let message = footer_message(app);
     frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), area);
+}
+
+fn render_save_dialog(frame: &mut Frame<'_>, app: &App) {
+    let Some(save) = &app.save else {
+        return;
+    };
+    let area = centered_rect(72, 8, frame.area());
+    let input = format!("File name or path: {}", sanitize(&save.value));
+    let message = save.error.as_deref().unwrap_or("Enter save · Esc cancel");
+    let dialog = Paragraph::new(vec![Line::from(input), Line::from(""), Line::from(message)])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Save session rules "),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(dialog, area);
+    let cursor_x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(u16::try_from("File name or path: ".len()).unwrap_or(0))
+        .saturating_add(u16::try_from(save.value.chars().count()).unwrap_or(u16::MAX));
+    frame.set_cursor_position((cursor_x.min(area.right().saturating_sub(1)), area.y + 1));
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width.saturating_sub(2));
+    let height = height.min(area.height.saturating_sub(2));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }
 
 fn lease_remaining(deadline: &str) -> String {
