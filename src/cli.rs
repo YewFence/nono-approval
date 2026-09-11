@@ -16,13 +16,16 @@ use crate::control::{
 use crate::daemon::{DaemonConfig, run};
 use crate::debug_capture::{DebugCapture, clean_captures, list_captures};
 use crate::display::truncate_summary;
-use crate::policy::{RuleAction, RuleScope};
+use crate::policy::{RuleAction, RuleScope, load_policy};
 use crate::runtime_path::ProjectPaths;
 use crate::webhook::WEBHOOK_PATH;
 
 #[derive(Debug, Parser)]
 #[command(name = "nono-approval", version, about)]
 pub struct Cli {
+    /// Load and replace daemon session rules from a TOML policy.
+    #[arg(long)]
+    policy: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -258,10 +261,35 @@ async fn execute(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
         None => {
             let paths = ProjectPaths::resolve()?;
+            if let Some(policy) = cli.policy.as_deref() {
+                let policy_path = resolve_policy_path(policy, &paths);
+                let rules = load_policy(&policy_path)?;
+                client(ClientArgs {
+                    control_socket: None,
+                })?
+                .replace_session_rules(&rules)
+                .await?;
+            }
             crate::interactive::run(&paths.control_socket).await?;
         }
     }
     Ok(())
+}
+
+fn resolve_policy_path(value: &str, paths: &ProjectPaths) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() || value.starts_with("./") || value.starts_with("../") {
+        return path;
+    }
+    if path.components().count() == 1 {
+        let name = value.strip_suffix(".toml").unwrap_or(value);
+        return paths
+            .config_file
+            .parent()
+            .unwrap()
+            .join(format!("{name}.toml"));
+    }
+    path
 }
 
 async fn serve(args: ServeArgs) -> Result<(), Box<dyn Error>> {

@@ -1,4 +1,6 @@
 use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::fs;
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
@@ -10,14 +12,14 @@ use crate::protocol::{AccessMode, KnownApprovalRequest, WebhookDecision};
 pub const MAX_SESSION_RULES: usize = 128;
 pub const MAX_RULE_PATH_BYTES: usize = 4096;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleAction {
     Allow,
     Deny,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleScope {
     Path,
@@ -38,6 +40,48 @@ pub enum PolicyError {
     Capacity,
     #[error("rule must cover the source request path and its exact access mode")]
     DoesNotCoverSource,
+    #[error("policy file contains duplicate path/scope/access rule: {0}")]
+    DuplicateRule(String),
+    #[error("could not read policy file {path}: {detail}")]
+    ReadPolicy { path: String, detail: String },
+    #[error("invalid policy TOML: {0}")]
+    PolicyToml(#[from] toml::de::Error),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyFile {
+    #[serde(default)]
+    pub rules: Vec<RuleDraft>,
+}
+
+/// Loads and validates a TOML policy file.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read, parsed, or contains invalid or duplicate rules.
+pub fn load_policy(path: &Path) -> Result<Vec<RuleDraft>, PolicyError> {
+    let contents = fs::read_to_string(path).map_err(|source| PolicyError::ReadPolicy {
+        path: path.display().to_string(),
+        detail: source.to_string(),
+    })?;
+    let file: PolicyFile = toml::from_str(&contents)?;
+    let mut keys = HashSet::new();
+    let mut rules = Vec::with_capacity(file.rules.len());
+    for draft in file.rules {
+        let rule = draft.compile()?;
+        let key = (rule.path.clone(), rule.scope, rule.access);
+        if !keys.insert(key) {
+            return Err(PolicyError::DuplicateRule(rule.path));
+        }
+        rules.push(RuleDraft {
+            action: rule.action,
+            path: rule.path,
+            scope: rule.scope,
+            access: rule.access,
+        });
+    }
+    Ok(rules)
 }
 
 /// Editable literal-path rule data, independent of requests, sessions, storage, and UI.
@@ -300,6 +344,9 @@ impl SessionRule {
 pub struct SessionRules(Vec<SessionRule>);
 
 impl SessionRules {
+    pub fn replace(&mut self, rules: Vec<SessionRule>) {
+        self.0 = rules;
+    }
     /// Replaces an identical path/scope/access rule, or inserts a new rule.
     ///
     /// # Errors
