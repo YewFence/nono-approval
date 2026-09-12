@@ -91,7 +91,42 @@ pub struct RuleDraft {
     pub action: RuleAction,
     pub path: String,
     pub scope: RuleScope,
+    #[serde(with = "access_mode_snake")]
     pub access: AccessMode,
+}
+
+/// Serializes [`AccessMode`] in lowercase snake case for policy files and the
+/// session-rules control API, while the webhook wire keeps its own spelling.
+mod access_mode_snake {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::protocol::AccessMode;
+
+    const READ: &str = "read";
+    const WRITE: &str = "write";
+    const READ_WRITE: &str = "read_write";
+
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `with` hook passes fields by reference
+    pub fn serialize<S: Serializer>(value: &AccessMode, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            AccessMode::Read => serializer.serialize_str(READ),
+            AccessMode::Write => serializer.serialize_str(WRITE),
+            AccessMode::ReadWrite => serializer.serialize_str(READ_WRITE),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AccessMode, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            READ => Ok(AccessMode::Read),
+            WRITE => Ok(AccessMode::Write),
+            READ_WRITE => Ok(AccessMode::ReadWrite),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &[READ, WRITE, READ_WRITE],
+            )),
+        }
+    }
 }
 
 impl RuleDraft {

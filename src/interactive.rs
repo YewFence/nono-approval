@@ -1582,6 +1582,7 @@ mod tests {
         let contents = std::fs::read_to_string(&target).unwrap();
         assert!(contents.contains("[[rules]]"));
         assert!(contents.contains("path = \"/work\""));
+        assert!(contents.contains("access = \"read\""));
 
         // Existing files are never overwritten, and the failure still sets
         // the deadline while leaving the file untouched.

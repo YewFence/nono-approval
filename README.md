@@ -74,7 +74,7 @@ Rules apply across all nono sessions using the daemon and last until clear or da
 action = "allow"
 path = "/work/project"
 scope = "directory"
-access = "Read"
+access = "read"
 ```
 
 ```text

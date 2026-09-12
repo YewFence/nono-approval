@@ -626,7 +626,7 @@ async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
     for index in 0..MAX_SESSION_RULES {
         let _ = write!(
             policy,
-            "[[rules]]\naction = \"allow\"\npath = \"/work/{index:03}/{long}\"\nscope = \"directory\"\naccess = \"Read\"\n\n"
+            "[[rules]]\naction = \"allow\"\npath = \"/work/{index:03}/{long}\"\nscope = \"directory\"\naccess = \"read\"\n\n"
         );
     }
     let policy_path = temporary.path().join("full-policy.toml");
@@ -660,7 +660,7 @@ async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
         "action": "allow",
         "path": format!("/work/{index}"),
         "scope": "directory",
-        "access": "Read",
+        "access": "read",
     })).collect::<Vec<_>>()});
     let stream = UnixStream::connect(&bridge.socket).await.unwrap();
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await.unwrap();
@@ -681,6 +681,30 @@ async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
     assert_eq!(
         bridge.client.status().await.unwrap().session_rule_count,
         MAX_SESSION_RULES
+    );
+
+    // The webhook wire spelling is rejected in policy batches.
+    let wire_spelling = json!({"rules": [{
+        "action": "allow",
+        "path": "/work",
+        "scope": "directory",
+        "access": "Read",
+    }]});
+    let stream = UnixStream::connect(&bridge.socket).await.unwrap();
+    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+    let task = tokio::spawn(connection);
+    let request = Request::put("/v1/session-rules")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&wire_spelling).unwrap(),
+        )))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    task.abort();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["error"],
+        "invalid session rules body"
     );
 }
 
