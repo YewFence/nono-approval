@@ -255,17 +255,17 @@ Success returns the same `DecisionResponse` as `/decision`. Unknown IDs return `
 Lists every rule currently held by the daemon. The owner-authenticated response is:
 
 ```json
-{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"Read"}]}
+{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"read_write"}]}
 ```
 
-`action` is `allow` or `deny`; `scope` is `path` or `directory`; `access` is `Read`, `Write`, or `ReadWrite`. An empty rule set returns `{"rules":[]}`. The TUI `S` save flow reads this listing before writing a new TOML policy file.
+`action` is `allow` or `deny`; `scope` is `path` or `directory`; `access` is `read`, `write`, or `read_write`, lowercase unlike the webhook wire spelling. An empty rule set returns `{"rules":[]}`. The TUI `S` save flow reads this listing before writing a new TOML policy file.
 
 ### `PUT /v1/session-rules`
 
 Atomically replaces the whole rule set with one validated batch. The owner-authenticated request is:
 
 ```json
-{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"Read"}]}
+{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"read_write"}]}
 ```
 
 Every rule passes the same path, scope, and access validation as the per-approval session-rule route. Duplicates inside the batch and batches larger than the 128-rule limit return `400`; bodies over `3,276,800` bytes return `413`. A failed request never changes the installed rules. Success responds with the installed count:
