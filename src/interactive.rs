@@ -1305,8 +1305,17 @@ mod tests {
             app.refresh().await;
             assert_eq!(app.session_rule_count, 1);
             assert!(app.status.contains("remembered"));
+            let probe = serde_json::json!({"backend":"test", "request": {
+                "capability_type":"capability", "request_id":format!("{key}-probe"), "session_id":"tui",
+                "child_pid":1, "path":"/work", "access":"Read"
+            }});
             assert!(matches!(
-                broker.ingress(incoming()).await.unwrap(),
+                broker
+                    .ingress(
+                        parse_default_webhook_body(&serde_json::to_vec(&probe).unwrap()).unwrap()
+                    )
+                    .await
+                    .unwrap(),
                 IngressOutcome::Automatic(_)
             ));
             for width in [36, 100] {

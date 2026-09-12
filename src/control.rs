@@ -25,10 +25,17 @@ use crate::debug_capture::DebugCapture;
 pub use crate::debug_capture::DebugCaptureStatus;
 use crate::display::MAX_DETAIL_BYTES;
 use crate::peer_identity::verify_owner;
-use crate::policy::{PolicyError, RuleAction, RuleDraft, RuleScope};
+use crate::policy::{
+    MAX_RULE_PATH_BYTES, MAX_SESSION_RULES, PolicyError, RuleAction, RuleDraft, RuleScope,
+};
 use crate::protocol::WebhookDecision;
 
 const MAX_CONTROL_BODY_BYTES: usize = 8 * 1024;
+
+/// PUT /v1/session-rules body ceiling: [`MAX_SESSION_RULES`] drafts whose paths
+/// may serialize to six JSON bytes per path byte (worst-case `\uXXXX` escapes).
+pub const MAX_SESSION_RULES_BODY_BYTES: usize =
+    MAX_SESSION_RULES * (MAX_RULE_PATH_BYTES * 6 + 1024);
 
 #[derive(Clone)]
 pub struct ControlContext {
@@ -372,14 +379,23 @@ async fn replace_rules_response(
     request: Request<Incoming>,
     broker: &Broker,
 ) -> Response<Full<Bytes>> {
-    let Ok(body) = read_decision_body(request.into_body()).await else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
+    let body = match read_body_limited(request.into_body(), MAX_SESSION_RULES_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(BodyReadError::TooLarge) => {
+            return error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "session rules body too large",
+            );
+        }
+        Err(BodyReadError::Unreadable) => {
+            return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
+        }
     };
     let Ok(request) = serde_json::from_slice::<ReplaceSessionRulesRequest>(&body) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid session rules body");
     };
     let mut rules = Vec::with_capacity(request.rules.len());
-    if request.rules.len() > crate::policy::MAX_SESSION_RULES {
+    if request.rules.len() > MAX_SESSION_RULES {
         return error_response(StatusCode::BAD_REQUEST, "session rule limit reached (128)");
     }
     for draft in request.rules {
@@ -506,13 +522,24 @@ async fn remember_response(
     }
 }
 
-async fn read_decision_body(mut body: Incoming) -> Result<Vec<u8>, ()> {
+enum BodyReadError {
+    TooLarge,
+    Unreadable,
+}
+
+async fn read_decision_body(body: Incoming) -> Result<Vec<u8>, ()> {
+    read_body_limited(body, MAX_CONTROL_BODY_BYTES)
+        .await
+        .map_err(|_| ())
+}
+
+async fn read_body_limited(mut body: Incoming, limit: usize) -> Result<Vec<u8>, BodyReadError> {
     let mut bytes = Vec::new();
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| ())?;
+        let frame = frame.map_err(|_| BodyReadError::Unreadable)?;
         if let Ok(data) = frame.into_data() {
-            if bytes.len().saturating_add(data.len()) > MAX_CONTROL_BODY_BYTES {
-                return Err(());
+            if bytes.len().saturating_add(data.len()) > limit {
+                return Err(BodyReadError::TooLarge);
             }
             bytes.extend_from_slice(&data);
         }
