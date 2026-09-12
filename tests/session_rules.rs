@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -11,10 +12,12 @@ use hyper_util::rt::TokioIo;
 use nono_approval::broker::{
     Broker, BrokerConfig, BrokerError, IngressOutcome, ShowApproval, Submission, TerminalState,
 };
-use nono_approval::control::{ControlClient, ControlContext, SessionRuleRequest};
+use nono_approval::control::{
+    ControlClient, ControlContext, MAX_SESSION_RULES_BODY_BYTES, SessionRuleRequest,
+};
 use nono_approval::debug_capture::{DebugCapture, DebugCaptureStatus};
 use nono_approval::display::MAX_DETAIL_BYTES;
-use nono_approval::policy::{MAX_SESSION_RULES, PolicyError, RuleAction, RuleScope};
+use nono_approval::policy::{MAX_SESSION_RULES, PolicyError, RuleAction, RuleScope, load_policy};
 use nono_approval::protocol::{IncomingApproval, WebhookDecision, parse_default_webhook_body};
 use nono_approval::webhook::{WEBHOOK_PATH, WebhookContext};
 use serde_json::{Value, json};
@@ -586,4 +589,96 @@ async fn edited_path_cannot_be_installed_from_stale_source_and_exact_allow_is_re
             .unwrap(),
         IngressOutcome::Pending(_)
     ));
+}
+
+#[tokio::test]
+async fn rule_matched_webhook_repeats_conflict_instead_of_regranting() {
+    let bridge = Bridge::new().await;
+    let source = seed(&bridge.broker, "exact", "/work/file").await;
+    let result = bridge
+        .cli(&["approve", source.approval_id.as_str(), "--session-path"])
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    source.wait().await;
+    let repeated = body("dup", "/work/file", "Read");
+    let (code, first) = bridge.webhook(repeated.clone()).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(first, json!({"decision":"granted"}));
+    let (code, second) = bridge.webhook(repeated).await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(second["error"], "duplicate approval request");
+    // Reserving one replay key must not block other requests from matching.
+    let (code, fresh) = bridge.webhook(body("fresh", "/work/file", "Read")).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(fresh, json!({"decision":"granted"}));
+}
+
+#[tokio::test]
+async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
+    let bridge = Bridge::new().await;
+    let temporary = tempfile::tempdir().unwrap();
+    let long = "a".repeat(1024);
+    let mut policy = String::new();
+    for index in 0..MAX_SESSION_RULES {
+        let _ = write!(
+            policy,
+            "[[rules]]\naction = \"allow\"\npath = \"/work/{index:03}/{long}\"\nscope = \"directory\"\naccess = \"Read\"\n\n"
+        );
+    }
+    let policy_path = temporary.path().join("full-policy.toml");
+    std::fs::write(&policy_path, policy).unwrap();
+    let rules = load_policy(&policy_path).unwrap();
+    assert_eq!(rules.len(), MAX_SESSION_RULES);
+    bridge.client.replace_session_rules(&rules).await.unwrap();
+    assert_eq!(
+        bridge.client.status().await.unwrap().session_rule_count,
+        MAX_SESSION_RULES
+    );
+    let (code, decision) = bridge
+        .webhook(body("hit", &format!("/work/000/{long}"), "Read"))
+        .await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(decision, json!({"decision":"granted"}));
+
+    let over_limit = vec![b'x'; MAX_SESSION_RULES_BODY_BYTES + 1];
+    let stream = UnixStream::connect(&bridge.socket).await.unwrap();
+    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+    let task = tokio::spawn(connection);
+    let request = Request::put("/v1/session-rules")
+        .body(Full::new(Bytes::from(over_limit)))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    task.abort();
+
+    let too_many = json!({"rules": (0..=MAX_SESSION_RULES).map(|index| json!({
+        "action": "allow",
+        "path": format!("/work/{index}"),
+        "scope": "directory",
+        "access": "Read",
+    })).collect::<Vec<_>>()});
+    let stream = UnixStream::connect(&bridge.socket).await.unwrap();
+    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+    let task = tokio::spawn(connection);
+    let request = Request::put("/v1/session-rules")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&too_many).unwrap(),
+        )))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    task.abort();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["error"],
+        "session rule limit reached (128)"
+    );
+    assert_eq!(
+        bridge.client.status().await.unwrap().session_rule_count,
+        MAX_SESSION_RULES
+    );
 }

@@ -340,7 +340,10 @@ impl Broker {
     ///
     /// # Errors
     ///
-    /// Returns registration errors only for unmatched requests.
+    /// Returns [`BrokerError::DuplicateRequest`] when the same session/request
+    /// pair is still pending or was recently decided, including requests that
+    /// match a rule; otherwise returns registration errors only for unmatched
+    /// requests.
     pub async fn ingress(&self, incoming: IncomingApproval) -> Result<IngressOutcome, BrokerError> {
         let mut state = self.state.lock().await;
         if state.shutting_down {
@@ -348,7 +351,18 @@ impl Broker {
                 reason: "approval daemon is shutting down".to_owned(),
             }));
         }
-        if let Some(rule) = state.session_rules.evaluate(&incoming.request) {
+        if let Some(rule) = state.session_rules.evaluate(&incoming.request).cloned() {
+            self.prune(&mut state);
+            let replay_key = (
+                incoming.request.session_id().to_owned(),
+                incoming.request.request_id().to_owned(),
+            );
+            if Self::is_duplicate(&state, &replay_key) {
+                return Err(BrokerError::DuplicateRequest);
+            }
+            state
+                .replay
+                .insert(replay_key, Instant::now() + self.config.tombstone_ttl);
             let decision = rule.decision();
             tracing::info!(
                 action = ?rule.action,
@@ -359,12 +373,19 @@ impl Broker {
                 "session policy decision"
             );
             if let Some(capture) = &self.debug_capture {
-                capture.record_policy_decision(&incoming, rule, &decision);
+                capture.record_policy_decision(&incoming, &rule, &decision);
             }
             return Ok(IngressOutcome::Automatic(decision));
         }
         self.register(&mut state, incoming)
             .map(IngressOutcome::Pending)
+    }
+
+    fn is_duplicate(state: &BrokerState, replay_key: &(String, String)) -> bool {
+        state.replay.contains_key(replay_key)
+            || state.pending.values().any(|pending| {
+                pending.session_id == replay_key.0 && pending.request_id == replay_key.1
+            })
     }
 
     fn register(
@@ -380,11 +401,7 @@ impl Broker {
             incoming.request.session_id().to_owned(),
             incoming.request.request_id().to_owned(),
         );
-        if state.replay.contains_key(&replay_key)
-            || state.pending.values().any(|pending| {
-                pending.session_id == replay_key.0 && pending.request_id == replay_key.1
-            })
-        {
+        if Self::is_duplicate(state, &replay_key) {
             return Err(BrokerError::DuplicateRequest);
         }
         let session_count = state
