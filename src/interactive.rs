@@ -226,45 +226,38 @@ impl App {
     }
 
     async fn save_session_rules(&mut self, value: &str) {
-        let rules = match self.client.session_rules().await {
-            Ok(response) => response.rules,
-            Err(error) => {
-                self.status = format!("Save rules failed: {error}");
-                return;
-            }
+        self.status = match Self::write_session_rules(&self.client, value).await {
+            Ok(path) => format!("Saved session rules to {path}"),
+            Err(error) => format!("Save rules failed: {error}"),
         };
-        if rules.is_empty() {
-            "Save rules failed: no session rules".clone_into(&mut self.status);
-            return;
-        }
-        let paths = match ProjectPaths::resolve() {
-            Ok(paths) => paths,
-            Err(error) => {
-                self.status = format!("Save rules failed: {error}");
-                return;
-            }
-        };
-        let path = resolve_save_path(value, &paths);
-        let contents = match toml::to_string_pretty(&PolicyFile { rules }) {
-            Ok(contents) => contents,
-            Err(error) => {
-                self.status = format!("Save rules failed: {error}");
-                return;
-            }
-        };
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => match file.write_all(contents.as_bytes()) {
-                Ok(()) => {
-                    self.status = format!(
-                        "Saved session rules to {}",
-                        sanitize(&path.display().to_string())
-                    );
-                }
-                Err(error) => self.status = format!("Save rules failed: {error}"),
-            },
-            Err(error) => self.status = format!("Save rules failed: {error}"),
-        }
         self.status_until = Instant::now() + Duration::from_secs(4);
+    }
+
+    async fn write_session_rules(client: &ControlClient, value: &str) -> Result<String, String> {
+        let rules = client
+            .session_rules()
+            .await
+            .map_err(|error| error.to_string())?
+            .rules;
+        if rules.is_empty() {
+            return Err("no session rules".to_owned());
+        }
+        let paths = ProjectPaths::resolve().map_err(|error| error.to_string())?;
+        let path = resolve_save_path(value, &paths);
+        let contents =
+            toml::to_string_pretty(&PolicyFile { rules }).map_err(|error| error.to_string())?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = file.write_all(contents.as_bytes()) {
+            // A create_new file already exists on disk; do not leave a partial
+            // policy behind or the next save to the same name fails forever.
+            let _ = std::fs::remove_file(&path);
+            return Err(error.to_string());
+        }
+        Ok(sanitize(&path.display().to_string()))
     }
 
     async fn open_rule_editor(&mut self, action: RuleAction, scope: RuleScope) {
@@ -1545,6 +1538,58 @@ mod tests {
         app.refresh().await;
         assert!(app.editing.is_none());
         assert_eq!(app.selected_id(), Some(next.approval_id.clone()));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn save_flow_sets_status_deadline_on_success_and_failure() {
+        use crate::broker::{Broker, BrokerConfig};
+        use crate::policy::{RuleAction, RuleDraft, RuleScope};
+        use crate::protocol::AccessMode;
+        use std::time::{Duration, Instant};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("control.sock");
+        let broker = Broker::new(BrokerConfig::default()).unwrap();
+        let server = test_server(&broker, &socket);
+        let mut app = App::new(&socket);
+        app.refresh().await;
+
+        // Failure paths must set the status deadline like the success path.
+        let before = Instant::now();
+        app.save_session_rules("/definitely/not/created/policy.toml")
+            .await;
+        assert_eq!(app.status, "Save rules failed: no session rules");
+        assert!(app.status_until >= before + Duration::from_secs(3));
+
+        app.client
+            .replace_session_rules(&[RuleDraft {
+                action: RuleAction::Allow,
+                path: "/work".to_owned(),
+                scope: RuleScope::Directory,
+                access: AccessMode::Read,
+            }])
+            .await
+            .unwrap();
+        let target = temporary.path().join("saved.toml");
+        app.save_session_rules(target.to_str().unwrap()).await;
+        assert!(
+            app.status.contains("Saved session rules to"),
+            "{}",
+            app.status
+        );
+        let contents = std::fs::read_to_string(&target).unwrap();
+        assert!(contents.contains("[[rules]]"));
+        assert!(contents.contains("path = \"/work\""));
+
+        // Existing files are never overwritten, and the failure still sets
+        // the deadline while leaving the file untouched.
+        let before = Instant::now();
+        app.save_session_rules(target.to_str().unwrap()).await;
+        assert!(app.status.contains("Save rules failed"), "{}", app.status);
+        assert!(app.status_until >= before + Duration::from_secs(3));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), contents);
         server.abort();
         let _ = server.await;
     }

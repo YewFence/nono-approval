@@ -101,6 +101,11 @@ pub struct ClearSessionRulesResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ReplaceSessionRulesResponse {
+    pub installed: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SessionRulesResponse {
     pub rules: Vec<RuleDraft>,
 }
@@ -139,7 +144,7 @@ impl ControlClient {
     pub async fn replace_session_rules(
         &self,
         rules: &[RuleDraft],
-    ) -> Result<ClearSessionRulesResponse, ControlClientError> {
+    ) -> Result<ReplaceSessionRulesResponse, ControlClientError> {
         self.request(
             Method::PUT,
             "/v1/session-rules",
@@ -414,7 +419,7 @@ async fn replace_rules_response(
     broker.replace_session_rules(rules).await;
     json_response(
         StatusCode::OK,
-        &ClearSessionRulesResponse { cleared: count },
+        &ReplaceSessionRulesResponse { installed: count },
     )
 }
 

@@ -52,7 +52,7 @@ _Avoid_: pending approval, active policy, persisted rule.
 
 ## Session Rule
 
-An explicitly remembered capability path/scope/access decision stored for one daemon run. It applies across all nono session IDs using that daemon, inherits the source request's exact access mode, and is removed by clear or restart. Creation and the source request's decision are atomic; subsequent hits bypass pending registration. See [Session Rules](session-rules.md).
+An explicitly remembered capability path/scope/access decision stored for one daemon run. It applies across all nono session IDs using that daemon and is removed by clear or restart. A rule created from a pending request inherits that source request's exact access mode, and that creation is atomic with the source decision; a policy-file batch validates every draft before replacing the whole set atomically. Subsequent hits bypass pending registration. See [Session Rules](session-rules.md).
 
 _Avoid_: per-agent rule, permanent approval, profile grant, filesystem enforcement.
 

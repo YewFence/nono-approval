@@ -138,7 +138,7 @@ Active requests and the replay cache use:
 
 A new ingress gets `409 Conflict` when the same combination is already pending or completed within the last 10 minutes. The replay cache and the Tombstones share the same TTL, but they are two separate structures: the former blocks duplicate ingresses, the latter explains recently completed approval IDs.
 
-These checks apply only to unmatched requests. Session Rule hits return immediately without consulting or updating replay state, including when their identity is already pending or recently completed.
+Capacity checks apply only to unmatched requests. Session Rule hits still consult the replay state first: an identity that is already pending or was recently completed returns `409 Conflict`, and an accepted hit reserves the replay key for the tombstone TTL just like a completed approval.
 
 ## Shutdown and crashes
 

@@ -21,14 +21,14 @@ The current implementation supports:
 - the four wire variants: command, endpoint, capability, and network;
 - an HTTP control interface over an owner-only Unix control socket;
 - precise-ID `status/list/show/approve/deny` CLI;
-- explicit daemon-lifetime capability Session Rules, derived atomically from a pending request;
+- explicit daemon-lifetime capability Session Rules, derived atomically from a pending request or installed as a validated TOML policy batch;
 - a polling-based full-screen TUI started when no subcommand is given;
 - platform paths and peer identity adapters for Linux and macOS;
 - explicit, owner-only NDJSON Debug Capture.
 
 Not supported:
 
-- persistent rules or permanent approval;
+- automatic rule persistence, restart recovery of rules, or permanent approval;
 - automatically judging whether an operation is safe or generating rules without explicit user action;
 - recovering pending requests after a daemon restart;
 - cross-host approval, a browser UI, or a general policy engine;
@@ -68,7 +68,7 @@ See [Protocol and adaptation](protocol.md).
 
 The Broker is the core module of the approval lifecycle. It registers requests, assigns approval IDs, enforces capacity and replay limits, maintains the daemon's monotonic-clock Approval Lease, and delivers each request's one-shot decision back to the corresponding webhook handler.
 
-The Broker also owns Session Rules and serializes ingress evaluation, unmatched registration, atomic remember-and-decide, and clearing under the same lock. Matching requests bypass pending registration, capacity and replay checks, IDs, and Tombstones; unmatched requests retain the existing lifecycle. Path matching and rule replacement are encapsulated in `policy.rs`.
+The Broker also owns Session Rules and serializes ingress evaluation, unmatched registration, atomic remember-and-decide, and clearing under the same lock. Matching requests bypass pending registration, capacity checks, IDs, and Tombstones, while reserving the same replay key as a completed request; unmatched requests retain the existing lifecycle. Path matching and rule replacement are encapsulated in `policy.rs`.
 
 `policy::RuleDraft` separates rule data and validation from session storage. `rule_selector::RuleSelector` restricts TUI selection to the original path and its ancestors, emitting explicit action/cancel events without approval IDs, HTTP, or persistence callbacks. The approval TUI hosts it with an immutable source snapshot and the daemon revalidates coverage under the Broker lock. See [Rule Scope Selector](rule-editor.md).
 

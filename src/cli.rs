@@ -23,7 +23,8 @@ use crate::webhook::WEBHOOK_PATH;
 #[derive(Debug, Parser)]
 #[command(name = "nono-approval", version, about)]
 pub struct Cli {
-    /// Load and replace daemon session rules from a TOML policy.
+    /// Load and replace daemon session rules from a TOML policy before the
+    /// interactive TUI starts; cannot be combined with a subcommand.
     #[arg(long)]
     policy: Option<String>,
     #[command(subcommand)]
@@ -215,6 +216,12 @@ pub async fn run_cli() -> Result<(), Box<dyn Error>> {
 }
 
 async fn execute(cli: Cli) -> Result<(), Box<dyn Error>> {
+    if cli.policy.is_some() && cli.command.is_some() {
+        return Err(
+            "--policy cannot be combined with a subcommand; it only preloads rules for the interactive TUI"
+                .into(),
+        );
+    }
     match cli.command {
         Some(Command::Setup) => setup_command()?,
         Some(Command::Config {
