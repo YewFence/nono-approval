@@ -105,7 +105,7 @@ validate method/path/content-type
 
 Duplicate requests return `409 Conflict`; a full per-session queue returns `429 Too Many Requests`; a full global queue returns `503 Service Unavailable`; a Broker registration failure returns `500 Internal Server Error`.
 
-Duplicate and capacity checks apply only after a rule miss. Rule hits have no approval ID, pending entry, Tombstone, or replay record, and do not revisit already-pending requests. Both evaluation and unmatched registration hold the same Broker lock as rule mutation. A shutting-down Broker returns denial instead of applying an allow rule.
+Capacity checks apply only after a rule miss. Rule hits have no approval ID, pending entry, or Tombstone, but they run the same duplicate check as registration and reserve the replay key for the tombstone TTL, so a repeated identity returns `409 Conflict` exactly like an unmatched duplicate. Both evaluation and unmatched registration hold the same Broker lock as rule mutation. A shutting-down Broker returns denial instead of applying an allow rule.
 
 Webhook callers are not authenticated: any local process on loopback can submit a well-formed forged request or consume capacity. Ingress itself grants no control interface authority; owner/peer UID rules for the control socket are in [Security model](security.md).
 
@@ -250,6 +250,32 @@ Decides the still-pending source request and remembers its capability path in on
 
 Success returns the same `DecisionResponse` as `/decision`. Unknown IDs return `404`; completed/expired IDs and exhaustion of the 128-rule limit return `409`. Non-capability requests, invalid paths, paths/scopes that do not cover the source, invalid reasons, unknown enum values/fields, and bodies over `8 KiB` return `400`. A failed operation does not install a rule or decide the source request; expired leases still expire normally. New clients omit the path field when using the original source unchanged through the CLI. Older daemons reject explicit edited-path bodies as unknown fields rather than silently granting a different scope.
 
+### `GET /v1/session-rules`
+
+Lists every rule currently held by the daemon. The owner-authenticated response is:
+
+```json
+{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"Read"}]}
+```
+
+`action` is `allow` or `deny`; `scope` is `path` or `directory`; `access` is `Read`, `Write`, or `ReadWrite`. An empty rule set returns `{"rules":[]}`. The TUI `S` save flow reads this listing before writing a new TOML policy file.
+
+### `PUT /v1/session-rules`
+
+Atomically replaces the whole rule set with one validated batch. The owner-authenticated request is:
+
+```json
+{"rules":[{"action":"allow","path":"/work/project","scope":"directory","access":"Read"}]}
+```
+
+Every rule passes the same path, scope, and access validation as the per-approval session-rule route. Duplicates inside the batch and batches larger than the 128-rule limit return `400`; bodies over `3,276,800` bytes return `413`. A failed request never changes the installed rules. Success responds with the installed count:
+
+```json
+{"installed":2}
+```
+
+An empty batch clears all rules. The CLI `--policy <file>` load validates a TOML file client-side and sends this request, so it inherits the same atomic replacement semantics.
+
 ### `DELETE /v1/session-rules`
 
 Clears every daemon-lifetime rule without affecting pending requests. The owner-authenticated response is:
@@ -258,7 +284,7 @@ Clears every daemon-lifetime rule without affecting pending requests. The owner-
 {"cleared":2}
 ```
 
-Repeated clearing succeeds with `cleared: 0`. `GET /v1/status` exposes the current `session_rule_count`; the current management surface has no rule listing or per-rule deletion endpoint.
+Repeated clearing succeeds with `cleared: 0`. `GET /v1/status` exposes the current `session_rule_count`; the current management surface has no per-rule deletion endpoint.
 
 ## Compatibility
 

@@ -52,7 +52,7 @@ max_body = "256KiB"
 
 `ConfigFile` currently has only three field groups: `schema_version`, `webhook`, and `approval`; the control socket is not written to the config and comes from the platform default path or the CLI `--control-socket`. Unknown fields, a missing version, a non-integer version, invalid TOML, a non-loopback listener, zero limits, and `max_per_session > max_pending` all fail.
 
-Runtime [Session Rules](session-rules.md) do not add config fields. They are created through owner-authenticated control actions, held only in daemon memory, and cleared on restart or `session-rules clear`. There is no policy-file configuration or environment-variable loader in this version.
+Runtime [Session Rules](session-rules.md) do not add config fields. They are created through owner-authenticated control actions, batch-replaced by an explicit `--policy <file>` load before the interactive TUI starts, and saved to a new TOML file from the TUI with `S`. Rules are held only in daemon memory and cleared on restart or `session-rules clear`. There is no automatic or default policy-file loading and no environment-variable loader in this version; replacing the rule set always requires the explicit flag against an already-running daemon.
 
 The file must be a regular file owned by the current user, must not be a symlink, and must have exactly `0600` permissions. `setup` writes atomically on first creation; `load` and `serve` only read, never migrating or repairing the file.
 

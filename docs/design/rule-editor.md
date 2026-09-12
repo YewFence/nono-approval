@@ -50,4 +50,4 @@ nono-approval approve appr_0123456789abcdef --session-dir --rule-path /path/to/p
 nono-approval approve appr_0123456789abcdef --session-path
 ```
 
-There is no policy-file editor or persistence. A future policy-file workflow may reuse `RuleDraft` validation, but this selector is deliberately limited to a fixed source path and its ancestors.
+There is no in-TUI policy editing or overwrite. Policy files live outside this selector: `nono-approval --policy <file>` loads a validated TOML batch before the TUI starts, and TUI `S` saves the daemon's current rules to a new file. The selector itself stays deliberately limited to a fixed source path and its ancestors.

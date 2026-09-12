@@ -633,7 +633,8 @@ async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
     std::fs::write(&policy_path, policy).unwrap();
     let rules = load_policy(&policy_path).unwrap();
     assert_eq!(rules.len(), MAX_SESSION_RULES);
-    bridge.client.replace_session_rules(&rules).await.unwrap();
+    let response = bridge.client.replace_session_rules(&rules).await.unwrap();
+    assert_eq!(response.installed, MAX_SESSION_RULES);
     assert_eq!(
         bridge.client.status().await.unwrap().session_rule_count,
         MAX_SESSION_RULES
@@ -681,4 +682,24 @@ async fn control_replaces_full_size_policy_and_rejects_oversized_batches() {
         bridge.client.status().await.unwrap().session_rule_count,
         MAX_SESSION_RULES
     );
+}
+
+#[tokio::test]
+async fn policy_flag_with_subcommand_fails_without_touching_rules() {
+    let bridge = Bridge::new().await;
+    let source = seed(&bridge.broker, "source", "/work").await;
+    let output = bridge
+        .cli(&["approve", source.approval_id.as_str(), "--session-dir"])
+        .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    source.wait().await;
+    let output = bridge.cli(&["--policy", "work", "status"]).await;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--policy"), "{stderr}");
+    assert_eq!(bridge.client.status().await.unwrap().session_rule_count, 1);
 }
