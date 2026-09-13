@@ -1,3 +1,14 @@
+## What's Changed in 0.3.0
+* Feat/policy by @YewFence in [#5](https://github.com/YewFence/nono-approval/pull/5)
+* lowercase access values in policy files and the rules API by @YewFence
+* correct replace response, policy flag, and TUI save flow by @YewFence
+* reserve replay keys and size the replace body limit by @YewFence
+* add session rules save prompt by @YewFence
+* add TOML policy loading for session rules by @YewFence
+* add daemon-lifetime session rules by @YewFence
+
+**Full Changelog**: https://github.com/YewFence/nono-approval/compare/v0.2.0...v0.3.0
+
 ## What's Changed in 0.2.0
 * bump version and install tool's deps by @YewFence
 * translate project documentation to English by @YewFence
