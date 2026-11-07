@@ -1,6 +1,6 @@
 [tools]
 git-cliff = "latest"
-"cargo:cargo-edit" = "0.13.13"
+"cargo:cargo-edit" = "0.13.14"
 "aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
 jq = "1"
 
