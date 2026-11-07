@@ -4,7 +4,7 @@ env_shell_expand = true
 minimum_release_age = "3d"
 
 [tools]
-rust = { version = "1.97.1", profile = "minimal", components = ["clippy", "rustfmt"] }
+rust = { version = "1.99.1", profile = "minimal", components = ["clippy", "rustfmt"] }
 # https://nodejs.org/
 node = "26"
 # https://github.com/jdx/aube
@@ -16,7 +16,7 @@ hk = "1"
 # https://github.com/suzuki-shunsuke/pinact
 pinact = "4"
 # https://github.com/crate-ci/typos
-typos = "1.48.0"
+typos = "1.52.0"
 betterleaks = "1"
 actionlint = "1"
 
